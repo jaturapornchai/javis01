@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+.secrets/
+client_secret*.json
+out_call.wav
+node_modules/
+.env
+sessions/
+# local only: scratch, tool output, generated voice, the docs the search worker reads, logs
+.ttslab/
+.playwright-mcp/
+.claude/
+ref_audio.wav
+docs/
+*.log
+facebook_post.md
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+token*.json

@@ -1,0 +1,16 @@
+# Install CUDA torch first (RTX 50xx needs cu128):
+#   pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+# (torchaudio >= 2.9 needs torchcodec + FFmpeg shared DLLs for torchaudio.load)
+faster-whisper
+omnivoice
+fastrtc[vad]
+ollama
+edge-tts
+soundfile
+numpy<=1.26.4
+scipy
+librosa
+ddgs
+pypdf
+httpx
+google-auth-oauthlib

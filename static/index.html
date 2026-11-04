@@ -1,0 +1,867 @@
+<!doctype html>
+<html lang="th">
+<head>
+<link rel="icon" href="data:,">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ผู้ช่วยเสียงภาษาไทย</title>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:radial-gradient(60% 45% at 15% 0%,rgba(124,58,237,.28),transparent),radial-gradient(50% 40% at 90% 5%,rgba(14,165,233,.24),transparent),radial-gradient(70% 50% at 50% 105%,rgba(236,72,153,.2),transparent),#05070f;color:#e8ecf5;font-family:"Noto Sans Thai","Leelawadee UI","Sarabun",Tahoma,sans-serif}
+#bg{position:fixed;inset:0;width:100%;height:100%;display:block}
+button,summary{font:inherit;color:inherit}
+:focus-visible{outline:2px solid #22d3ee;outline-offset:2px}
+.glass{background:rgba(10,14,28,.62);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:12px}
+
+/* top bar: every child is 40px tall and centered on the same line */
+#top{position:fixed;top:0;left:0;right:0;display:flex;align-items:center;gap:12px;padding:12px 16px;z-index:5}
+#top h1{margin:0;font-size:18px;font-weight:600;height:40px;line-height:40px;margin-right:auto}
+#top .hint{height:40px;line-height:40px;font-size:14px;color:#aab4cc}
+.btn{height:40px;padding:0 18px;border-radius:20px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);cursor:pointer;line-height:1;display:inline-flex;align-items:center;justify-content:center}
+.btn:hover:not(:disabled){background:rgba(255,255,255,.16)}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.primary{background:#0e7490;border-color:#22d3ee}
+.btn.danger{background:#9f1239;border-color:#fb7185}
+
+/* device picker: native <details> dropdown under its 40px summary button */
+#dev{position:relative}
+#dev summary{list-style:none}
+#dev summary::-webkit-details-marker{display:none}
+#dev>div{position:absolute;right:0;top:48px;width:min(320px,90vw);padding:12px;display:flex;flex-direction:column;gap:10px;z-index:7}
+#dev .f{display:flex;flex-direction:column;gap:4px;font-size:13px;color:#aab4cc}
+#dev .row{display:flex;align-items:center;gap:8px}
+#dev .row .btn{height:36px;padding:0 12px;font-size:13px;flex:none}
+#dev meter{width:100%;height:10px}
+#dev select{flex:1;min-width:0;height:36px;border-radius:8px;background:#0b1020;color:#e8ecf5;border:1px solid rgba(255,255,255,.2);padding:0 8px;font:inherit;font-size:14px}
+
+#note{position:fixed;top:64px;left:50%;transform:translateX(-50%);padding:8px 16px;z-index:6;font-size:14px;color:#fde68a}
+#note:empty{display:none}
+
+#left{position:fixed;left:16px;top:72px;bottom:196px;width:280px;max-width:80vw;z-index:4;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+#left>details{pointer-events:auto;display:flex;flex-direction:column;padding:8px 12px;min-height:0}
+#tr[open]{flex:1}
+/* team panel: one row per member, dot + name + status share one line */
+#teamlist{list-style:none;margin:6px 0 0;padding:0;font-size:13px;line-height:1.5;max-height:34vh;overflow-y:auto}
+#teamlist li{padding:3px 4px;border-top:1px solid rgba(255,255,255,.06);cursor:pointer;border-radius:6px}
+#teamlist li:hover{background:rgba(255,255,255,.06)}
+#teamlist .row{display:flex;align-items:center;gap:8px;height:22px}
+#teamlist .dot{width:10px;height:10px;border-radius:50%;flex:none;background:var(--c);opacity:.3}
+#teamlist .run .dot{opacity:1;box-shadow:0 0 8px var(--c);animation:pulse 1s ease-in-out infinite}
+#teamlist .done .dot{opacity:1}
+#teamlist .nm{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#teamlist .st{flex:none;color:#7d89a6;white-space:nowrap}
+#teamlist .run .st{color:#fbbf24}#teamlist .done .st{color:#4ade80}#teamlist .none .st{color:#f87171}
+#teamlist .tk{padding-left:18px;color:#7d89a6;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#teamlist .tk:empty{display:none}
+#teamlist .boss .nm{color:#67e8f9}
+@keyframes pulse{50%{transform:scale(1.45)}}
+#lg ul{list-style:none;margin:6px 0 0;padding:0;font-size:13px;line-height:1.7;max-height:34vh;overflow-y:auto}
+#lg li span{display:inline-block;width:2.2em}
+#tr summary,#team summary{cursor:pointer;height:28px;line-height:28px;font-weight:600}
+#trlist{list-style:none;margin:8px 0 0;padding:0;overflow-y:auto;flex:1;font-size:14px;line-height:1.5}
+#trlist li{margin-bottom:6px}
+#trlist .u{color:#67e8f9}
+#trlist .b{color:#e8ecf5}
+
+/* cards: one group per question, newest on top, all kept to scroll back to; every card opens in the panel */
+#cards{position:fixed;right:16px;top:72px;bottom:16px;width:min(320px,42vw);display:flex;flex-direction:column;gap:10px;overflow-y:auto;z-index:4;perspective:900px}
+.turn{display:flex;flex-direction:column;gap:6px}
+.turn>h4{margin:4px 2px 0;font-size:12px;line-height:18px;color:#67e8f9;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card{display:block;padding:8px 10px;color:inherit;text-decoration:none;transform-origin:right center;animation:cin .6s cubic-bezier(.2,.8,.2,1) both}
+a.card:hover{border-color:#a78bfa;background:rgba(30,27,75,.7)}
+@keyframes cin{from{opacity:0;transform:translateX(60px) rotateY(-28deg)}to{opacity:1;transform:none}}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;color:#05070f;font-weight:600}
+.badge.web{background:#60a5fa}.badge.docs{background:#4ade80}.badge.camera{background:#f472b6}.badge.bcbrain{background:#fb923c}.badge.gmail{background:#f87171}.badge.calendar{background:#a78bfa}.badge.drive{background:#facc15}.badge.desktop{background:#2dd4bf}.badge.other{background:#9ca3af}
+.card h3{margin:4px 0 2px;font-size:14px;line-height:1.35}
+.card p{margin:0;font-size:12.5px;line-height:1.45;color:#c3cbe0;display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+
+#pill{position:fixed;left:50%;top:68%;transform:translateX(-50%);height:40px;line-height:28px;padding:5px 18px;border-radius:20px;z-index:3;font-size:16px;white-space:nowrap;max-width:90vw;overflow:hidden;text-overflow:ellipsis}
+
+#subs{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);width:min(760px,calc(100vw - 600px));min-width:300px;padding:12px 20px;text-align:center;z-index:3;background:radial-gradient(ellipse at center,rgba(5,7,15,.75),rgba(5,7,15,.35));border-radius:16px}
+#subs:has(#bot:empty):has(#user:empty){visibility:hidden}
+/* chat bar: input and button share one 40px line */
+#chat{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);width:min(760px,calc(100vw - 700px));min-width:300px;display:flex;align-items:center;gap:8px;padding:4px 4px 4px 8px;border-radius:24px;z-index:5;margin:0}
+#chat:focus-within{border-color:#22d3ee}
+#chat input{flex:1;min-width:0;height:40px;border:0;outline:0;background:transparent;color:#e8ecf5;font:inherit;font-size:16px;padding:0 8px}
+#chat input::placeholder{color:#7d89a6}
+#user{font-size:18px;color:#67e8f9;margin-bottom:4px;min-height:0}
+#bot{font-size:30px;line-height:1.4;color:#fff;max-height:4.3em;overflow:hidden;text-shadow:0 2px 8px #000}
+#bot span{animation:sin .5s ease-out both}
+@keyframes sin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+#cam{margin:0;position:fixed;left:16px;bottom:16px;width:220px;z-index:4;overflow:hidden;padding:0}
+#cam[hidden]{display:none}
+#cam video{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;transform:scaleX(-1);background:#000}
+#cam b{position:absolute;left:8px;top:6px;font-size:12px;background:rgba(0,0,0,.55);padding:1px 8px;border-radius:8px}
+
+/* panel mode, always on (ลุงจืด 2026-11-04 "เน้นแสดงข้อมูลแน่นๆ"): the info panel fills the screen, the orb sits on top of it */
+#panel{position:fixed;left:312px;right:352px;top:166px;bottom:184px;z-index:3;display:flex;flex-direction:column;padding:12px 18px;animation:pin .5s ease both}
+#panel .ph{display:flex;align-items:center;gap:10px;margin:0 0 6px}
+#panel h2{margin:0;flex:1;min-width:0;font-size:15px;line-height:30px;color:#aab4cc;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#pback{height:30px;padding:0 12px;font-size:13px;flex:none}
+#pback[hidden]{display:none}
+#pbody:empty::before{content:"ถามได้เลย คำตอบละเอียดจะแสดงตรงนี้ · กดการ์ดด้านขวาหรือแถวลูกทีมเพื่อดูต่อ";color:#7d89a6}
+@keyframes pin{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.md{font-size:16px;line-height:1.65;overflow-wrap:anywhere}
+#pbody{flex:1;min-height:0;overflow-y:auto}
+.md h3{font-size:1.4em;margin:.5em 0 .3em}.md h4{font-size:1.2em;margin:.5em 0 .3em}.md h5{font-size:1.05em;margin:.5em 0 .3em}
+.md p{margin:.4em 0}.md ul,.md ol{margin:.4em 0;padding-left:1.4em}
+.md table{border-collapse:collapse;margin:.6em 0;width:100%}
+.md th,.md td{border:1px solid rgba(255,255,255,.18);padding:5px 10px;text-align:left}
+.md th{background:rgba(255,255,255,.08)}
+.md code{background:rgba(255,255,255,.12);padding:0 5px;border-radius:4px;font-family:Consolas,monospace;font-size:.92em}
+.md a{color:#7dd3fc}
+.md a.wl{color:#f0abfc;text-decoration:underline dotted}
+.md .fi{animation:sin .5s ease-out both}
+/* [ขั้นตอน] a → b → c: steps pop in one by one, numbered, arrows between, a glow runs along them */
+.md .flow{list-style:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px 28px;margin:.7em 0;padding:0;counter-reset:st}
+.md .flow li{position:relative;padding:6px 12px 6px 36px;border-radius:10px;background:rgba(124,58,237,.18);border:1px solid rgba(167,139,250,.45);counter-increment:st;animation:fpop .45s cubic-bezier(.2,.8,.2,1) both,fglow 3s ease-in-out infinite;animation-delay:calc(var(--i) * .25s),calc(var(--i) * 3s / var(--n))}
+.md .flow li::before{content:counter(st);position:absolute;left:8px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:50%;background:#a78bfa;color:#05070f;font-size:12px;font-weight:700;line-height:20px;text-align:center}
+/* the mark over a numbered list: long steps go one under another, arrows point down */
+.md .flow.col{flex-direction:column;align-items:stretch;gap:16px}
+.md .flow.col li:not(:last-child)::after{content:"↓";right:auto;left:14px;top:auto;bottom:-17px;transform:none}
+.md .flow li.seen{animation-name:none,fglow}  /* already on screen while the answer streams: no second pop */
+.md .flow li:not(:last-child)::after{content:"→";position:absolute;right:-22px;top:50%;transform:translateY(-50%);color:#f0abfc;font-weight:700}
+@keyframes fpop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
+@keyframes fglow{0%,60%,100%{box-shadow:none}30%{box-shadow:0 0 16px rgba(240,171,252,.85);border-color:#f0abfc}}
+/* [แผนที่] place @lat,lon: OpenStreetMap embed, their credit shown */
+.md .map{margin:.7em 0}.md .map iframe{display:block;width:100%;height:260px;border:0;border-radius:10px;background:#0b1020}
+.md .map figcaption{font-size:13px;color:#aab4cc;margin-top:4px}
+#trlist summary{height:auto;line-height:1.5;font-weight:400;color:#aab4cc}
+#trlist .md{font-size:13px;padding-top:4px}
+body.panel #pill{left:calc(50vw + 72px);top:84px;transform:none;height:32px;line-height:22px;font-size:14px;padding:5px 14px}
+body.panel #subs{left:312px;right:352px;width:auto;min-width:0;transform:none;bottom:76px;padding:8px 16px}
+body.panel #chat{left:312px;right:352px;width:auto;min-width:0;transform:none}
+body.panel #bot{font-size:22px;max-height:2.9em}
+body.panel #user{font-size:15px}
+#toast{position:fixed;left:50%;top:30%;transform:translateX(-50%);z-index:4;pointer-events:none}
+.gt{display:flex;flex-direction:column;align-items:center;gap:6px;text-shadow:0 2px 10px #000;animation:gt 2s ease both}
+.gt .emo{font-size:72px;line-height:1.1}
+.gt .lbl{font-size:22px;line-height:1.3;padding:4px 16px;background:rgba(5,7,15,.7);border-radius:16px}
+@keyframes gt{0%{opacity:0;transform:scale(.4)}15%{opacity:1;transform:scale(1.15)}25%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:scale(.9)}}
+@media (max-width:900px){
+  /* phone: orb on top, panel in the middle, a row of cards above the subtitles and the chat bar */
+  #top{gap:6px;padding:12px 8px}#top h1{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}#top .btn{padding:0 12px;white-space:nowrap}
+  #panel{left:8px;right:8px;top:166px;bottom:296px}
+  body.panel #pill{left:calc(50vw + 50px);top:98px}
+  body.panel #subs{left:8px;right:8px;bottom:186px}body.panel #bot{font-size:18px}
+  body.panel #chat{left:8px;right:8px}
+  #cards{top:auto;bottom:64px;left:8px;right:8px;width:auto;height:118px;flex-direction:row;overflow:auto hidden}
+  .turn{flex-direction:row}.turn>h4{display:none}.card{flex:0 0 72vw}
+  #cam{width:44vw;bottom:72px}#top .hint{display:none}#left{display:none}
+}
+@media (prefers-reduced-motion:reduce){#teamlist .dot,.card,#bot span,.gt,#panel,.md .fi,.md .flow li{animation:none}}
+</style>
+</head>
+<body class="panel">
+<canvas id="bg" aria-hidden="true"></canvas>
+<header id="top">
+  <h1>ผู้ช่วยเสียงภาษาไทย</h1>
+  <span class="hint">ควรใส่หูฟัง</span>
+  <details id="dev">
+    <summary class="btn" aria-label="เลือกไมค์ กล้อง และลำโพง">อุปกรณ์</summary>
+    <div class="glass">
+      <div class="f"><label for="micSel">ไมค์ (ลองพูด แถบต้องขยับ)</label><select id="micSel"></select>
+        <meter id="micLvl" min="0" max="1" value="0" aria-label="ระดับเสียงไมค์"></meter></div>
+      <div class="f"><label for="camSel">กล้อง</label><select id="camSel"></select></div>
+      <div class="f"><label for="spkSel">ลำโพง</label>
+        <div class="row"><select id="spkSel"></select><button id="spkTest" class="btn" type="button">ทดสอบเสียง</button></div></div>
+    </div>
+  </details>
+  <button id="camBtn" class="btn" type="button" disabled aria-label="เปิดหรือปิดกล้อง">ปิดกล้อง</button>
+  <button id="callBtn" class="btn primary" type="button">เริ่มคุย</button>
+</header>
+<div id="note" class="glass" role="status" aria-live="polite"></div>
+<div id="left">
+<details id="team" class="glass" open>
+  <summary id="teamsum">ทีมงาน</summary>
+  <ul id="teamlist"></ul>
+</details>
+<details id="tr" class="glass" open>
+  <summary>บทสนทนา</summary>
+  <ul id="trlist"></ul>
+</details>
+<details id="lg" class="glass">
+  <summary>ท่าทางที่ใช้ได้</summary>
+  <ul id="lglist"></ul>
+</details>
+</div>
+<div id="toast"></div>
+<div id="pill" class="glass" role="status" aria-live="polite">พร้อมคุย</div>
+<section id="panel" class="glass" aria-label="ข้อมูล"><div class="ph"><button id="pback" class="btn" type="button" hidden>‹ ย้อนกลับ</button><h2 id="ptitle">ข้อมูล</h2></div><div id="pbody" class="md"></div></section>
+<div id="cards" aria-label="ข้อมูลที่เกี่ยวข้อง"></div>
+<div id="subs" aria-live="polite"><div id="user"></div><div id="bot"></div></div>
+<form id="chat" class="glass" autocomplete="off"><input id="chatIn" maxlength="500" placeholder="พิมพ์ถามแทนการพูด แล้วกด Enter" aria-label="พิมพ์ข้อความถึงผู้ช่วย"><button class="btn primary" type="submit">ส่ง</button></form>
+<figure id="cam" class="glass" hidden><video id="camVideo" autoplay muted playsinline></video><b>กล้อง</b></figure>
+<audio id="remote" autoplay hidden></audio>
+
+<script type="module">
+import * as THREE from "three";
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const demo = new URLSearchParams(location.search).get("demo") === "1";
+const MP_VER = "1.2.2"; // pinned @mediapipe/tasks-vision
+const MP_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@" + MP_VER;
+const MP_MODELS = "https://storage.googleapis.com/mediapipe-models/";
+const GESTURE_MODEL = MP_MODELS + "gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task";
+const G = {
+  TICK_MS: 100,        // ~10 fps detection
+  HOLD_FINGERS_MS: 800,
+  COOLDOWN_MS: 2500,   // after any sent gesture
+};
+const GESTURES = { // only finger-count choices (ลุงจืด 2026-11-04); name: [emoji, Thai label, how to]
+  fingers_1: ["☝️", "เลือกข้อ 1", "ชูนิ้ว 1"], fingers_2: ["✌️", "เลือกข้อ 2", "ชูนิ้ว 2"], fingers_3: ["3️⃣", "เลือกข้อ 3", "ชูนิ้ว 3"],
+  fingers_4: ["4️⃣", "เลือกข้อ 4", "ชูนิ้ว 4"], fingers_5: ["🖐️", "เลือกข้อ 5", "แบมือ 5 นิ้ว"],
+};
+const LABEL = { idle: "พร้อมคุย", listening: "กำลังฟัง…", thinking: "กำลังคิด…", searching: "กำลังคิด…", speaking: "กำลังพูด…" };
+const STATE = { // color, spin speed
+  idle: [0x5b7aa8, 0.15], listening: [0x22d3ee, 0.3], thinking: [0xfbbf24, 1.2], searching: [0xfbbf24, 1.2], speaking: [0x8b5cf6, 0.5],
+};
+const SRC = { web: ["เว็บ", 0x60a5fa], docs: ["เอกสารในเครื่อง", 0x4ade80], camera: ["กล้อง", 0xf472b6], bcbrain: ["คลังความรู้ BC", 0xfb923c],
+  gmail: ["อีเมล", 0xf87171], calendar: ["ปฏิทิน", 0xa78bfa], drive: ["Google Drive", 0xfacc15], desktop: ["คอมพิวเตอร์", 0x2dd4bf] };
+const OTHER_COLOR = 0x9ca3af; // any source string not in SRC
+
+let state = "idle", statusText = "", userLevel = 0, botLevel = 0, panelText = "", panelBlocks = 0;
+const ui = { call: $("callBtn"), cam: $("camBtn"), pill: $("pill"), user: $("user"), bot: $("bot"), cards: $("cards"), list: $("trlist"), note: $("note") };
+
+/* ---------- UI state ---------- */
+function render() { ui.pill.textContent = statusText || LABEL[state]; }
+function setState(s) {
+  if (s !== state) pulse = Math.max(pulse, 0.6); // every state change rings out from the orb
+  state = s; render();
+  if (team.boss) { team.boss.st.textContent = BOSS[s]; team.boss.li.className = "boss" + (s === "idle" ? "" : " run"); }
+}
+function notice(msg) { ui.note.textContent = msg; }
+
+let botLi = null;
+function onEvent(ev) {
+  if (ev.kind === "user") {
+    archivePanel(); hidePanel(); resetTeam(); $("remote").volume = 1; turnText = ev.text; turnBox = null;
+    statusText = ""; ui.user.textContent = ev.text ? "คุณ: " + ev.text : ""; ui.bot.textContent = "";
+    if (ev.text) ui.list.append(el("li", "u", "คุณ: " + ev.text)); // "" = the secretary speaks first (greeting, reminder)
+    botLi = el("li", "b", "ผู้ช่วย: "); ui.list.append(botLi);
+    setState("thinking");
+  } else if (ev.kind === "bot") {
+    statusText = ""; ui.bot.append(el("span", "", ev.text)); ui.bot.scrollTop = ui.bot.scrollHeight;
+    if (!botLi) { botLi = el("li", "b", "ผู้ช่วย: "); ui.list.append(botLi); }
+    botLi.textContent += ev.text;
+    setState("speaking");
+  } else if (ev.kind === "status") {
+    statusText = ev.text; setState("searching");
+  } else if (ev.kind === "info") {
+    addCard(ev);
+  } else if (ev.kind === "team") {
+    onTeam(ev);
+  } else if (ev.kind === "panel") {
+    showPanel(String(ev.text ?? ""));
+  } else if (ev.kind === "done") {
+    statusText = ""; botLi = null; setState("idle");
+  }
+  ui.list.scrollTop = ui.list.scrollHeight;
+}
+function onLog(msg) {
+  // the caller talks over the secretary: turn it down at once (server VAD sends this ~0.6 s into the speech); fastrtc
+  // drops the rest of its audio when the caller pauses and the next turn ("user") turns it back up. Not on
+  // response_starting: fastrtc sends that with every audio chunk, so the reply being cut would turn itself back up
+  if (msg === "started_talking") $("remote").volume = 0.15;
+  if (msg === "noise") $("remote").volume = 1; // the server heard no speech in it after all
+  const s = { started_talking: "listening", pause_detected: "thinking", response_starting: "speaking" }[msg];
+  if (s) setState(s);
+}
+
+/* ---------- team panel: the boss (LLM) and the workers it hands jobs to, live ---------- */
+const BOSS = { idle: "ว่าง รอคำสั่ง", listening: "กำลังฟัง", thinking: "กำลังคิดว่าจะให้ใครทำอะไร", searching: "แจกงานแล้ว รอลูกทีม", speaking: "กำลังสรุปให้ฟัง" };
+let camOK = false; // set from /team: true only where the camera worker exists (owner line)
+const team = { rows: {}, jobs: {}, found: {}, boss: null }; // rows: member -> {li, st, tk, run: Set of job ids, t0}; jobs: job id -> member; found: job id -> cards
+const hex = (n) => "#" + n.toString(16).padStart(6, "0");
+function teamRow(key) {
+  const boss = key === "boss", li = el("li", boss ? "boss" : ""), row = el("div", "row"), st = el("span", "st", boss ? BOSS.idle : "ว่าง"), tk = el("div", "tk");
+  li.style.setProperty("--c", boss ? "#67e8f9" : hex(Object.hasOwn(SRC, key) ? SRC[key][1] : OTHER_COLOR));
+  row.append(el("span", "dot"), el("span", "nm", boss ? "หัวหน้า" : "ลูกทีม" + (Object.hasOwn(SRC, key) ? SRC[key][0] : key)), st);
+  li.append(row, tk); $("teamlist").append(li);
+  li.tabIndex = 0; li.setAttribute("role", "button"); li.onkeydown = (e) => e.key === "Enter" && li.click();
+  li.onclick = () => boss ? (nav.length = 0, drawPanel()) : showFinds(key); // the boss row goes back to the answer
+  return (team.rows[key] = { li, st, tk, run: new Set(), t0: 0 });
+}
+function initTeam() {
+  team.boss = teamRow("boss");
+  fetch("/team").then((r) => r.json()).then(({ boss, workers }) => {
+    team.boss.tk.textContent = boss; camOK = workers.includes("camera"); // the public line has no camera: never ask for it
+    for (const w of workers) if (!team.rows[w]) teamRow(w);
+    teamCount();
+  }).catch(() => {}); // older server: members appear when they get their first job
+}
+function onTeam({ id, state: st, worker, task, secs }) {
+  if (st === "run") {
+    const r = team.rows[worker] || teamRow(worker);
+    if (!r.run.size) r.t0 = performance.now();
+    team.jobs[id] = worker; r.run.add(id); r.li.className = "run"; r.tk.textContent = task || "";
+    addSatellite(worker); // the worker also orbits the boss orb while it works
+    return teamCount();
+  }
+  const r = team.rows[team.jobs[id]];
+  if (!r) return;
+  r.run.delete(id);
+  if (!r.run.size) { r.li.className = st; r.st.textContent = (st === "done" ? "เสร็จ ✓ " : "ไม่ได้ข้อมูล ") + secs + " วิ"; }
+  teamCount();
+}
+function teamCount() { // ลุงจืด 2026-11-04 "บอกจำนวนลูกทีมด้วย": each job is one worker
+  const busy = Object.values(team.rows).reduce((n, r) => n + (r === team.boss ? 0 : r.run.size), 0), turn = Object.keys(team.jobs).length;
+  $("teamsum").textContent = busy ? `ทีมงาน · ลูกทีม ${busy} คนกำลังช่วย` : turn ? `ทีมงาน · รอบนี้ลูกทีมช่วย ${turn} คน`
+    : `ทีมงาน · ลูกทีม ${Object.keys(team.rows).length - 1} ฝ่าย`;
+}
+function showFinds(key) { // the cards one worker brought back this turn, each opens further
+  const found = Object.keys(team.jobs).filter((j) => team.jobs[j] === key).flatMap((j) => team.found[j] || []);
+  openView(`${team.rows[key].li.querySelector(".nm").textContent} หามาได้ ${found.length} รายการ`,
+    found.length ? found.map(makeCard) : [el("p", "", "รอบนี้ยังไม่ได้รับงาน หรือยังไม่เจอข้อมูล")]);
+}
+function resetTeam() {
+  for (const [k, r] of Object.entries(team.rows)) if (k !== "boss") { r.run.clear(); r.li.className = ""; r.st.textContent = "ว่าง"; r.tk.textContent = ""; }
+  team.jobs = {}; team.found = {}; teamCount();
+}
+setInterval(() => { // live seconds while a worker runs
+  for (const r of Object.values(team.rows)) if (r.run.size && r !== team.boss)
+    r.st.textContent = `กำลังทำ ${((performance.now() - r.t0) / 1000).toFixed(1)} วิ` + (r.run.size > 1 ? ` (${r.run.size} คน)` : "");
+}, 200);
+
+function safeUrl(u) {
+  try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : null; } catch { return null; }
+}
+let turnText = "", turnBox = null; // the question and its card group
+function makeCard({ source, title, snippet, url, slug }) { // web: the page itself; BC note: in full; else its text in the panel
+  const href = source === "web" && url ? safeUrl(url) : null, c = el("a", "card glass");
+  if (href) { c.href = href; c.target = "_blank"; c.rel = "noopener noreferrer"; }
+  else { c.href = "#"; c.onclick = (e) => { e.preventDefault(); slug ? openNote(slug, title) : openView(title || "ข้อมูล", [el("p", "", snippet || "")]); }; }
+  if (slug) c.dataset.slug = slug;
+  const known = Object.hasOwn(SRC, source);
+  c.append(el("span", "badge " + (known ? source : "other"), known ? SRC[source][0] : String(source)), el("h3", "", title || ""), el("p", "", snippet || ""));
+  return c;
+}
+function addCard(card) {
+  (team.found[card.job] ||= []).push(card);
+  if (!turnBox) { // ponytail: last 50 questions kept, the page stays light
+    turnBox = el("section", "turn"); turnBox.append(el("h4", "", turnText || "ผู้ช่วยเริ่มคุย")); ui.cards.prepend(turnBox);
+    while (ui.cards.children.length > 50) ui.cards.lastChild.remove();
+  }
+  if (!card.slug || !turnBox.querySelector(`[data-slug="${CSS.escape(card.slug)}"]`)) turnBox.append(makeCard(card)); // a note read after its search hit: one card
+}
+
+/* ---------- three.js scene ---------- */
+const canvas = $("bg");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+camera.position.z = 5;
+const ORB = { y: 104, size: 116, phoneY: 114, phoneSize: 76 }; // px: center height and diameter, on top of the info panel
+const group = new THREE.Group(); scene.add(group); // starts mid-screen and flies up on load
+
+const orbMat = new THREE.ShaderMaterial({
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+  uniforms: { uT: { value: 0 }, uAmp: { value: 0 }, uColor: { value: new THREE.Color(STATE.idle[0]) } },
+  vertexShader: `uniform float uT,uAmp;varying vec3 vN;varying vec3 vV;varying vec3 vP;
+    float n(vec3 p){return sin(p.x*1.7+uT)*sin(p.y*1.9-uT*.8)*sin(p.z*1.5+uT*.6);}
+    void main(){vec3 p=position;float d=n(p*1.8)*.6+n(p*3.7)*.4;p+=normal*d*(.06+uAmp*.5);vP=p;
+      vec4 mv=modelViewMatrix*vec4(p,1.);vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
+  // iridescent: hue runs over rim, height and time (cosine palette), the state color tints it, moving bands add detail
+  fragmentShader: `uniform float uT,uAmp;uniform vec3 uColor;varying vec3 vN;varying vec3 vV;varying vec3 vP;
+    vec3 pal(float t){return .5+.5*cos(6.2832*(t+vec3(0.,.33,.67)));}
+    void main(){float f=pow(1.-abs(dot(normalize(vN),normalize(vV))),2.);
+      vec3 c=mix(pal(f*.9+vP.y*.3+vP.x*.2+uT*.12),uColor,.3);
+      float b=.5+.5*sin(vP.y*22.+uT*4.)*sin(vP.x*9.-uT*2.);
+      gl_FragColor=vec4(c*(.3+f*1.7+b*.25*(.4+uAmp*2.)),.35+f*.65);}`,
+});
+const orb = new THREE.Mesh(new THREE.IcosahedronGeometry(1.1, 24), orbMat);
+group.add(orb);
+
+function glowTexture() {
+  const c = document.createElement("canvas"); c.width = c.height = 128;
+  const g = c.getContext("2d"), r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  r.addColorStop(0, "rgba(255,255,255,1)"); r.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = r; g.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+}
+const glowTex = glowTexture();
+const glowMat = (color, opacity) => new THREE.SpriteMaterial({ map: glowTex, color, opacity, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true });
+const halo = new THREE.Sprite(glowMat(STATE.idle[0], 0.55)); halo.scale.setScalar(5); group.add(halo);
+const core = new THREE.Sprite(glowMat(0xffffff, 0.7)); core.scale.setScalar(1.5); group.add(core); // white-hot heart, beats with the voice
+const pulseRing = new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.02, 8, 128),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+group.add(pulseRing);
+let pulse = 0;
+
+const rings = [0x22d3ee, 0xe879f9, 0xfbbf24].map((color, i) => { // three colored orbits, two sparks racing round each
+  const m = new THREE.Mesh(new THREE.TorusGeometry(1.55 + i * 0.3, 0.01, 8, 200),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
+  m.rotation.set(1.2 - i * 0.6, i * 0.8, i * 0.4);
+  m.sparks = [0, Math.PI].map((a) => { const s = new THREE.Sprite(glowMat(color, 1)); s.scale.setScalar(0.4); s.a = a + i; m.add(s); return s; });
+  group.add(m); return m;
+});
+
+function points(n, rMin, rMax, size, opacity, sat) { // every point its own random hue
+  const a = new Float32Array(n * 3), rgb = new Float32Array(n * 3), col = new THREE.Color();
+  for (let i = 0; i < n; i++) {
+    const r = rMin + Math.random() * (rMax - rMin), th = Math.random() * 6.283, ph = Math.acos(2 * Math.random() - 1);
+    a.set([r * Math.sin(ph) * Math.cos(th), r * Math.sin(ph) * Math.sin(th), r * Math.cos(ph)], i * 3);
+    col.setHSL(Math.random(), sat, 0.72); rgb.set([col.r, col.g, col.b], i * 3);
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(a, 3)); g.setAttribute("color", new THREE.BufferAttribute(rgb, 3));
+  return new THREE.Points(g, new THREE.PointsMaterial({ size, map: glowTex, vertexColors: true, transparent: true, // round soft dots, not squares
+     opacity, depthWrite: false, blending: THREE.AdditiveBlending }));
+}
+const stars = points(1200, 4, 14, 0.06, 0.8, 0.45); scene.add(stars);
+const swirl = points(360, 1.4, 2.4, 0.09, 0.35, 0.95); group.add(swirl); // rainbow dust, thicker while thinking
+
+const sats = [];
+function addSatellite(source) {
+  const color = Object.hasOwn(SRC, source) ? SRC[source][1] : OTHER_COLOR;
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.08, 16, 16), new THREE.MeshBasicMaterial({ color }));
+  const g = new THREE.Sprite(glowMat(color, 0.9)); g.scale.setScalar(0.7); m.add(g);
+  sats.push({ m, r: 1.9 + Math.random() * 0.6, sp: 0.5 + Math.random() * 0.6, a: Math.random() * 6.28, tilt: Math.random() * 1.2 - 0.6 });
+  group.add(m);
+  if (sats.length > 6) group.remove(sats.shift().m);
+}
+
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(dpr); renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+
+let amp = 0, spin = 0.15, t0 = performance.now(), last = t0;
+const tint = new THREE.Color(STATE.idle[0]);
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.1), t = (now - t0) / 1000; last = now;
+  const [col, spd] = STATE[state];
+  tint.lerp(new THREE.Color(col), Math.min(1, dt * 3));
+  spin += (spd - spin) * Math.min(1, dt * 3);
+  let target = state === "listening" ? userLevel : state === "speaking" ? botLevel : state === "idle" ? 0.03 : 0.12;
+  amp += (Math.min(1, target * 2.5) - amp) * Math.min(1, dt * 10);
+  orbMat.uniforms.uT.value = t * (0.6 + spin); orbMat.uniforms.uAmp.value = amp; orbMat.uniforms.uColor.value.copy(tint);
+  orb.rotation.y += dt * spin; orb.scale.setScalar(1 + amp * 0.12);
+  halo.material.color.setHSL((t * 0.04) % 1, 0.8, 0.55).lerp(tint, 0.4); halo.material.opacity = 0.35 + amp * 0.5;
+  core.material.opacity = 0.35 + amp * 0.9; core.scale.setScalar(1.2 + amp * 1.2);
+  rings.forEach((r, i) => {
+    const dir = i % 2 ? -1 : 1, R = r.geometry.parameters.radius;
+    r.rotation.z += dt * spin * dir * (1 + i * 0.3); r.material.opacity = 0.35 + amp * 0.6;
+    for (const s of r.sparks) { s.a += dt * dir * (1.2 + spin * 2 + amp * 6); s.position.set(Math.cos(s.a) * R, Math.sin(s.a) * R, 0); }
+  });
+  stars.rotation.y += dt * 0.02 * (1 + spin * 2);
+  const thinking = state === "thinking" || state === "searching";
+  swirl.material.opacity += ((thinking ? 0.95 : 0.35) - swirl.material.opacity) * Math.min(1, dt * 3);
+  swirl.rotation.y += dt * spin * 1.5; swirl.rotation.x += dt * spin * 0.5;
+  for (const s of sats) {
+    s.a += dt * s.sp * (1 + spin);
+    s.m.position.set(Math.cos(s.a) * s.r, Math.sin(s.a) * s.r * Math.sin(s.tilt), Math.sin(s.a) * s.r * Math.cos(s.tilt));
+  }
+  const upp = 2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / innerHeight, k = Math.min(1, dt * 4); // world units per px
+  const wide = innerWidth > 900, ox = wide ? (312 + innerWidth - 352) / 2 : innerWidth / 2; // centered over the panel
+  const tx = (ox - innerWidth / 2) * upp, ty = (innerHeight / 2 - (wide ? ORB.y : ORB.phoneY)) * upp;
+  group.position.x += (tx - group.position.x) * k; group.position.y += (ty - group.position.y) * k;
+  group.scale.setScalar(group.scale.x + ((wide ? ORB.size : ORB.phoneSize) * upp / 2.2 - group.scale.x) * k);
+  pulse = Math.max(0, pulse - dt * 1.5);
+  pulseRing.visible = pulse > 0; pulseRing.scale.setScalar(1.2 + (1 - pulse) * 1.8);
+  pulseRing.material.opacity = pulse * 0.8; pulseRing.material.color.setHSL((t * 0.3) % 1, 0.9, 0.65);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ---------- audio levels ---------- */
+let actx = null;
+function analyser(stream) {
+  actx ||= new AudioContext();
+  const an = actx.createAnalyser(); an.fftSize = 512;
+  actx.createMediaStreamSource(stream).connect(an); // not connected to destination: avoids double playback/echo
+  const buf = new Uint8Array(an.fftSize);
+  return () => { an.getByteTimeDomainData(buf); let s = 0; for (const v of buf) s += ((v - 128) / 128) ** 2; return Math.sqrt(s / buf.length); };
+}
+let userMeter = null, botMeter = null;
+setInterval(() => { if (userMeter) userLevel = userMeter(); if (botMeter) botLevel = botMeter(); }, 40);
+
+/* ---------- call ---------- */
+let pc = null, es = null, stream = null, frameTimer = null, inflight = false, camOn = false, webrtcId = "", demoTimers = [];
+
+function showCam(on) {
+  camOn = on; $("cam").hidden = !on; ui.cam.textContent = on ? "ปิดกล้อง" : "เปิดกล้อง";
+  stream?.getVideoTracks().forEach((t) => (t.enabled = on));
+}
+ui.cam.onclick = () => showCam(!camOn);
+
+/* ---------- devices: mic / camera / speaker; choice kept in localStorage, switchable mid-call ---------- */
+const MIC = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, CAM = { width: 640, height: 480 };
+const sel = { audioinput: $("micSel"), videoinput: $("camSel"), audiooutput: $("spkSel") };
+const KIND_NAME = { audioinput: "ไมค์", videoinput: "กล้อง", audiooutput: "ลำโพง" };
+const canSink = "setSinkId" in HTMLMediaElement.prototype;
+const pick = (kind) => (sel[kind].value ? { deviceId: { exact: sel[kind].value } } : {});
+
+async function listDevices() {
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  for (const [kind, s] of Object.entries(sel)) {
+    const keep = s.value || localStorage.getItem("dev." + kind) || "";
+    s.replaceChildren(new Option(kind === "audiooutput" && !canSink ? "ลำโพงของระบบ (เบราว์เซอร์นี้เลือกไม่ได้)" : "ค่าเริ่มต้นของระบบ", ""));
+    // ids are blank until mic/camera permission is granted; "default" duplicates the first option
+    devs.filter((d) => d.kind === kind && d.deviceId && d.deviceId !== "default")
+      .forEach((d, i) => s.add(new Option(d.label || `${KIND_NAME[kind]} ${i + 1}`, d.deviceId)));
+    s.value = [...s.options].some((o) => o.value === keep) ? keep : "";
+  }
+  sel.audiooutput.disabled = !canSink;
+}
+
+async function switchDevice(kind) {
+  if (kind === "audiooutput") return canSink && $("remote").setSinkId(sel.audiooutput.value);
+  if (!stream) return; // used when the next call starts
+  const isMic = kind === "audioinput";
+  const track = (await navigator.mediaDevices.getUserMedia(isMic ? { audio: { ...MIC, ...pick(kind) } } : { video: { ...CAM, ...pick(kind) } })).getTracks()[0];
+  const old = isMic ? stream.getAudioTracks() : stream.getVideoTracks();
+  if (isMic) { await pc?.getSenders().find((x) => x.track?.kind === "audio")?.replaceTrack(track); userMeter = analyser(new MediaStream([track])); }
+  old.forEach((t) => { t.stop(); stream.removeTrack(t); });
+  stream.addTrack(track);
+  if (!isMic) { $("camVideo").srcObject = new MediaStream([track]); showCam(true); ui.cam.disabled = false; }
+}
+
+/* mic test: level meter while the picker is open (the call's own mic during a call, else a temporary one) */
+let testStream = null, testMeter = null;
+async function micTest(on) {
+  testStream?.getTracks().forEach((t) => t.stop()); testStream = testMeter = null;
+  if (!on || stream) return;
+  testStream = await navigator.mediaDevices.getUserMedia({ audio: { ...MIC, ...pick("audioinput") } });
+  testMeter = analyser(testStream);
+}
+function meterTick() {
+  const m = testMeter || userMeter;
+  $("micLvl").value = m ? Math.min(1, m() * 5) : 0;
+  if ($("dev").open) requestAnimationFrame(meterTick);
+}
+
+/* speaker test: short three-note chime through the chosen speaker */
+$("spkTest").onclick = async () => {
+  try {
+    actx ||= new AudioContext(); await actx.resume();
+    const o = actx.createOscillator(), g = actx.createGain(), out = actx.createMediaStreamDestination(), t = actx.currentTime;
+    [523, 659, 784].forEach((f, i) => o.frequency.setValueAtTime(f, t + i * 0.18));
+    g.gain.setValueAtTime(0.25, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+    o.connect(g).connect(out);
+    const a = new Audio(); a.srcObject = out.stream;
+    if (canSink) await a.setSinkId(sel.audiooutput.value);
+    await a.play(); o.start(t); o.stop(t + 0.9); o.onended = () => { a.srcObject = null; };
+  } catch (e) { notice(`เล่นเสียงทดสอบไม่ได้ (${e.name || "error"})`); }
+};
+
+for (const [kind, s] of Object.entries(sel)) {
+  s.onchange = () => {
+    localStorage.setItem("dev." + kind, s.value);
+    switchDevice(kind).then(() => kind === "audioinput" && $("dev").open && micTest(true))
+      .catch((e) => notice(`เปลี่ยน${KIND_NAME[kind]}ไม่ได้ (${e.name || "error"})`));
+  };
+}
+$("dev").addEventListener("toggle", async (e) => {
+  if (!e.target.open) return micTest(false);
+  if (!stream && sel.audioinput.options.length <= 1) {
+    try { // ask once so the lists show real device names before the first call
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: camOK }).catch(() => navigator.mediaDevices.getUserMedia({ audio: true }));
+      s.getTracks().forEach((t) => t.stop());
+    } catch { notice("ยังไม่ได้อนุญาตให้ใช้ไมค์หรือกล้อง"); }
+    await listDevices();
+  }
+  await micTest(true).catch(() => notice("เปิดไมค์ไม่ได้"));
+  meterTick();
+});
+navigator.mediaDevices?.addEventListener("devicechange", listDevices);
+listDevices().catch(() => {});
+
+/* ---------- chat: typed question, answered by voice + screen like speech ---------- */
+$("chat").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("chatIn").value.trim();
+  if (!text) return;
+  if (!pc) return notice('กด "เริ่มคุย" ก่อน แล้วค่อยพิมพ์');
+  $("chatIn").value = "";
+  fetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ webrtc_id: webrtcId, text }) })
+    .then((r) => r.ok || notice("ส่งข้อความไม่สำเร็จ")).catch(() => notice("ส่งข้อความไม่สำเร็จ"));
+};
+
+function sendFrame() {
+  const v = $("camVideo");
+  if (inflight || !camOn || !v.videoWidth) return;
+  const c = document.createElement("canvas"), k = Math.min(1, 640 / v.videoWidth);
+  c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  inflight = true;
+  c.toBlob((b) => {
+    if (!b) { inflight = false; return; }
+    fetch(`/frame?webrtc_id=${webrtcId}`, { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: b })
+      .catch(() => {}).finally(() => (inflight = false));
+  }, "image/jpeg", 0.7);
+}
+
+async function start() {
+  ui.call.disabled = true; notice(""); micTest(false); // the call takes over the mic (and the meter)
+  try {
+    const audio = { ...MIC, ...pick("audioinput") };
+    if (!camOK) stream = await navigator.mediaDevices.getUserMedia({ audio });
+    else try { stream = await navigator.mediaDevices.getUserMedia({ audio, video: { ...CAM, ...pick("videoinput") } }); }
+    catch { stream = await navigator.mediaDevices.getUserMedia({ audio }); notice("ใช้กล้องไม่ได้ จะคุยด้วยเสียงอย่างเดียว"); }
+    if (stream.getVideoTracks().length) { $("camVideo").srcObject = stream; showCam(true); ui.cam.disabled = false; }
+    userMeter = analyser(stream);
+    await listDevices(); switchDevice("audiooutput").catch(() => notice("เลือกลำโพงไม่ได้ ใช้ลำโพงของระบบแทน"));
+
+    // "<session>_<call>": the session id stays in this browser, so the secretary remembers the talk across calls
+    const hex = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => b.toString(16).padStart(2, "0")).join("");
+    if (!/^[0-9a-f]{8,32}$/.test(localStorage.getItem("session") || "")) localStorage.setItem("session", hex(8));
+    webrtcId = localStorage.getItem("session") + "_" + hex(5);
+    // TURN for callers behind NAT (public line only; the owner page on 127.0.0.1 gets a 404 and needs none)
+    pc = new RTCPeerConnection(await fetch("/ice").then((r) => (r.ok ? r.json() : {})).catch(() => ({})));
+    stream.getAudioTracks().forEach((t) => pc.addTrack(t, stream)); // video goes via /frame, not WebRTC
+    pc.createDataChannel("text").onmessage = (e) => {
+      try { const m = JSON.parse(e.data); if (m.type === "log") onLog(m.data); } catch { /* ignore non-JSON */ }
+    };
+    pc.ontrack = (e) => {
+      $("remote").srcObject = e.streams[0]; botMeter = analyser(e.streams[0]);
+    };
+    pc.onconnectionstatechange = () => { if (pc && ["failed", "disconnected"].includes(pc.connectionState)) { notice("การเชื่อมต่อขาดหาย"); hangup(); } };
+
+    await pc.setLocalDescription(await pc.createOffer());
+    await Promise.race([
+      new Promise((ok) => { if (pc.iceGatheringState === "complete") ok(); else pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && ok()); }),
+      new Promise((ok) => setTimeout(ok, 3000)),
+    ]);
+    const { sdp, type } = pc.localDescription;
+    const res = await fetch("/webrtc/offer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sdp, type, webrtc_id: webrtcId }) });
+    const ans = await res.json();
+    if (ans.status === "failed" || !ans.sdp) {
+      const code = ans.meta?.error || ans.error || "unknown";
+      throw new Error(code === "concurrency_limit_reached" ? "มีคนใช้งานอยู่ ลองใหม่ภายหลัง" : `เชื่อมต่อไม่สำเร็จ (รหัส: ${code})`);
+    }
+    await pc.setRemoteDescription(ans);
+
+    es = new EventSource(`/outputs?webrtc_id=${webrtcId}`);
+    es.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch { /* ignore bad event */ } };
+    frameTimer = setInterval(sendFrame, 1000);
+    setState("listening");
+    ui.call.textContent = "วางสาย"; ui.call.className = "btn danger"; ui.call.disabled = false;
+  } catch (e) {
+    notice(e.message?.startsWith("มี") || e.message?.startsWith("เชื่อม") ? e.message : `เริ่มคุยไม่ได้ (${e.name || "error"})`);
+    hangup();
+  }
+}
+
+function hangup() {
+  es?.close(); es = null; pc?.close(); pc = null;
+  stream?.getTracks().forEach((t) => t.stop()); stream = null;
+  clearInterval(frameTimer); demoTimers.forEach(clearTimeout); demoTimers = [];
+  userMeter = botMeter = null; userLevel = botLevel = 0; botLi = null; statusText = "";
+  $("camVideo").srcObject = null; $("remote").srcObject = null; $("cam").hidden = true; camOn = false;
+  ui.cam.disabled = true; ui.cam.textContent = "ปิดกล้อง";
+  archivePanel(); hidePanel(); ui.user.textContent = ""; ui.bot.textContent = ""; // cards stay: scroll back after the call
+  sats.splice(0).forEach((s) => group.remove(s.m));
+  ui.call.textContent = "เริ่มคุย"; ui.call.className = "btn primary"; ui.call.disabled = false;
+  setState("idle");
+}
+
+/* ---------- info panel: safe markdown subset -> DOM (textContent only, never innerHTML) ---------- */
+const LIST = /^\s*(?:[-*]|\d+\.)\s+(.*)$/, TABLE_SEP = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+function inline(parent, text) {
+  for (const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)\s]+\))/)) {
+    const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/), href = link && safeUrl(link[2]);
+    const wiki = part.match(/^\[\[([\w.-]{1,120})(?:\|([^\]]+))?\]\]$/); // [[note-slug]] or [[note-slug|label]]: opens that BC note
+    if (wiki) { const a = el("a", "wl", wiki[2] || wiki[1]); a.href = "#"; a.onclick = (e) => { e.preventDefault(); openNote(wiki[1]); }; parent.append(a); }
+    else if (/^\*\*[^*]+\*\*$/.test(part)) parent.append(el("strong", "", part.slice(2, -2)));
+    else if (/^`[^`]+`$/.test(part)) parent.append(el("code", "", part.slice(1, -1)));
+    else if (href) { const a = el("a", "", link[1]); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; parent.append(a); }
+    else if (part) parent.append(part); // plain text node; unknown syntax stays literal
+  }
+}
+const FLOW = /^\s*\[ขั้นตอน\]\s*(.*)$/, MAP = /^\s*\[แผนที่\]\s*(.+?)\s*(?:@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?))?\s*$/;
+function mapFigure(place, lat, lon) { // the server found "@lat,lon" for the place (OpenStreetMap Nominatim)
+  if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) return el("p", "", "ตำแหน่ง: " + place);
+  const f = el("figure", "map"), fr = el("iframe"), cap = el("figcaption"), big = el("a", "", "เปิดแผนที่ใหญ่"), d = 0.008;
+  fr.src = `https://www.openstreetmap.org/export/embed.html?bbox=${[lon - d, lat - d, lon + d, lat + d].map((v) => v.toFixed(5))}&layer=mapnik&marker=${lat},${lon}`;
+  fr.loading = "lazy"; fr.title = "แผนที่ " + place;
+  big.href = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=17/${lat}/${lon}`; big.target = "_blank"; big.rel = "noopener noreferrer";
+  cap.append("📍 " + place + " · ", big, " · © OpenStreetMap");
+  f.append(fr, cap); return f;
+}
+function mdBlocks(text) { // each block keeps its source lines (dataset.src) so renderMd can leave it in place
+  const lines = text.split("\n"), out = []; let i = 0;
+  while (i < lines.length) {
+    const l = lines[i], h = l.match(/^(#{1,3})\s+(.*)$/), start = i, n = out.length, fl = l.match(FLOW), mp = l.match(MAP);
+    if (!l.trim()) { i++; }
+    else if (fl) { // "[ขั้นตอน] a → b → c", or the mark alone over a numbered list (what DeepSeek writes)
+      const steps = fl[1].split(/\s*(?:→|->)\s*/).filter(Boolean), f = el("ol", steps.length ? "flow" : "flow col");
+      if (!steps.length) for (; lines[i + 1] !== undefined && LIST.test(lines[i + 1]); i++) steps.push(lines[i + 1].match(LIST)[1]);
+      steps.forEach((s, k) => { const li = el("li"); li.style.setProperty("--i", k); inline(li, s); f.append(li); });
+      f.style.setProperty("--n", steps.length); out.push(f); i++;
+    } else if (mp) { out.push(mp[2] ? mapFigure(mp[1], +mp[2], +mp[3]) : el("p", "", "ตำแหน่ง: " + mp[1])); i++; }
+    else if (h) { const e = el("h" + (h[1].length + 2)); inline(e, h[2]); out.push(e); i++; }
+    else if (l.includes("|") && TABLE_SEP.test(lines[i + 1] || "")) {
+      const t = el("table"), head = el("thead"), body = el("tbody"), hr = el("tr");
+      for (const c of cells(l)) { const x = el("th"); inline(x, c); hr.append(x); }
+      head.append(hr); i += 2;
+      for (; i < lines.length && lines[i].includes("|"); i++) {
+        const r = el("tr"); for (const c of cells(lines[i])) { const x = el("td"); inline(x, c); r.append(x); } body.append(r);
+      }
+      t.append(head, body); out.push(t);
+    } else if (LIST.test(l)) {
+      const e = el(/^\s*\d+\./.test(l) ? "ol" : "ul");
+      for (; i < lines.length && LIST.test(lines[i]); i++) { const li = el("li"); inline(li, lines[i].match(LIST)[1]); e.append(li); }
+      out.push(e);
+    } else {
+      const p = el("p"), buf = [];
+      while (i < lines.length && lines[i].trim() && !/^#{1,3}\s/.test(lines[i]) && !LIST.test(lines[i]) && !FLOW.test(lines[i]) && !MAP.test(lines[i])) buf.push(lines[i++]);
+      inline(p, buf.join(" ")); out.push(p);
+    }
+    if (out.length > n) out.at(-1).dataset.src = lines.slice(start, i).join("\n");
+  }
+  return out;
+}
+function renderMd(box, text, animateFrom = Infinity) { // blocks that did not change stay put: a map replaced would reload
+  const blocks = mdBlocks(text), old = [...box.children]; let k = 0;
+  while (k < blocks.length && k < old.length && old[k].dataset.src === blocks[k].dataset.src) k++;
+  if (old[k]?.matches(".flow") && blocks[k]?.matches(".flow")) // a flow still streaming in: its steps on screen do not pop again
+    [...blocks[k].children].slice(0, old[k].children.length).forEach((li) => li.classList.add("seen"));
+  old.slice(k).forEach((b) => b.remove());
+  blocks.slice(k).forEach((b, i) => { if (k + i >= animateFrom) b.classList.add("fi"); box.append(b); });
+  return blocks.length;
+}
+/* drill-down (ลุงจืด 2026-11-04 "กดดูได้ต่อเนื่อง"): views stacked over the answer, the back button pops one */
+const nav = [], notes = new Map(); // nav: {title, nodes}; notes: slug -> text, fetched once per page
+function openView(title, nodes) { nav.push({ title, nodes }); drawPanel(); return nav.at(-1); }
+function drawPanel() { // the top view, or the answer when none is open
+  const v = nav.at(-1), box = $("pbody");
+  $("ptitle").textContent = v ? v.title : "ข้อมูล"; $("pback").hidden = !v;
+  if (v) box.replaceChildren(...v.nodes); else panelBlocks = renderMd(box, panelText);
+  box.scrollTop = 0;
+}
+$("pback").onclick = () => { nav.pop(); drawPanel(); };
+async function openNote(slug, title) {
+  const v = openView(title || slug, [el("p", "", "กำลังเปิด…")]);
+  try {
+    if (!notes.has(slug)) { const r = await fetch("/note?slug=" + encodeURIComponent(slug)); if (!r.ok) throw r.status; notes.set(slug, (await r.json()).text); }
+    const text = notes.get(slug), meta = el("details"); // slug/sources lines (code paths, owner line only) fold away
+    meta.append(el("summary", "", "ที่มาในโค้ด"), el("p", "", (text.match(/^(slug|sources):.*$/gm) || []).join("\n")));
+    v.nodes = [...mdBlocks(text.replace(/^(slug|sources):.*\n?/gm, "")), ...(meta.lastChild.textContent ? [meta] : [])]; v.title = title || notes.get(slug).match(/^#\s+(.+)/m)?.[1] || slug;
+  } catch { v.nodes = [el("p", "", "เปิดข้อมูลนี้ไม่สำเร็จ ลองกดใหม่อีกครั้ง")]; }
+  if (nav.at(-1) === v) drawPanel();
+}
+function showPanel(text) { // each panel event replaces the whole answer; a view the caller opened stays on top
+  panelText = text;
+  if (nav.length) return;
+  const box = $("pbody"), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  panelBlocks = renderMd(box, text, panelBlocks);
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+function hidePanel() {
+  panelText = ""; nav.length = 0; drawPanel();
+}
+function archivePanel() { // keep the last panel in the transcript as a collapsed item
+  if (!panelText) return;
+  const li = el("li"), d = el("details"), b = el("div", "md");
+  renderMd(b, panelText); d.append(el("summary", "", "รายละเอียด"), b); li.append(d); ui.list.append(li);
+}
+
+/* ---------- gestures (MediaPipe, local) ---------- */
+const lgList = $("lglist");
+for (const [emo, label, how] of Object.values(GESTURES)) { const li = el("li"); li.append(el("span", "", emo), label + " — " + how); lgList.append(li); }
+
+let toastTimer = 0;
+function showGesture(name) {
+  const [emo, label] = GESTURES[name];
+  const t = el("div", "gt"); t.append(el("span", "emo", emo), el("span", "lbl", label));
+  $("toast").replaceChildren(t); pulse = 1;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").replaceChildren(), 2000);
+}
+
+let handModel = null, lastSent = -Infinity, ts = -1;
+let hold = { label: null, since: 0, fired: false };
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+function countFingers(lm) {
+  let n = [[8, 6], [12, 10], [16, 14], [20, 18]].filter(([tip, pip]) => dist(lm[tip], lm[0]) > dist(lm[pip], lm[0])).length;
+  if (dist(lm[4], lm[5]) > dist(lm[3], lm[5])) n++;
+  return n;
+}
+
+function sendGesture(name, now) {
+  lastSent = now; hold.fired = true;
+  showGesture(name);
+  fetch("/gesture", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ webrtc_id: webrtcId, gesture: name }) }).catch(() => {});
+}
+
+function gestureTick() { // held still for HOLD_FINGERS_MS -> one choice
+  const v = $("camVideo");
+  if (!handModel || !stream || !camOn || v.readyState < 2 || !v.videoWidth) return;
+  const now = Math.max(performance.now(), ts + 1); ts = now; // MediaPipe needs strictly increasing timestamps
+  const lm = handModel.recognizeForVideo(v, now).landmarks[0];
+  const n = lm ? countFingers(lm) : 0, label = n ? "fingers_" + n : null;
+  if (label !== hold.label) hold = { label, since: now, fired: false };
+  if (state === "listening" || now - lastSent < G.COOLDOWN_MS) { hold.since = now; return; }
+  if (label && !hold.fired && now - hold.since >= G.HOLD_FINGERS_MS) sendGesture(label, now);
+}
+
+async function initGesture() {
+  try {
+    const { FilesetResolver, GestureRecognizer } = await import(MP_BASE + "/vision_bundle.mjs");
+    const fileset = await FilesetResolver.forVisionTasks(MP_BASE + "/wasm");
+    const make = async (Cls, url, extra) => {
+      try { return await Cls.createFromOptions(fileset, { baseOptions: { modelAssetPath: url, delegate: "GPU" }, runningMode: "VIDEO", ...extra }); }
+      catch { return Cls.createFromOptions(fileset, { baseOptions: { modelAssetPath: url, delegate: "CPU" }, runningMode: "VIDEO", ...extra }); }
+    };
+    handModel = await make(GestureRecognizer, GESTURE_MODEL, { numHands: 1 });
+    setInterval(gestureTick, G.TICK_MS);
+    console.log("gesture ready");
+  } catch (e) {
+    handModel = null; notice("โหลดระบบท่าทางไม่ได้ ยังคุยด้วยเสียงได้ตามปกติ"); console.warn("gesture init failed", e);
+  }
+}
+
+/* ---------- demo mode (?demo=1): scripted events, no backend ---------- */
+const DEMO_MD = ["## สรุปราคาทองวันนี้", "ข้อมูลล่าสุดจากแหล่งที่ค้นพบ", "", "- ทองคำแท่งรับซื้อ **40,000** บาท", "- ทองคำแท่งขายออก **40,200** บาท",
+  "- ทองรูปพรรณขายออก `41,000` บาท", "", "| ประเภท | รับซื้อ | ขายออก |", "|---|---|---|", "| ทองคำแท่ง | 40,000 | 40,200 |", "| ทองรูปพรรณ | 39,300 | 41,000 |", "",
+  "", "[ขั้นตอน] เช็กราคาประกาศ → เลือกร้าน → ซื้อพร้อมใบรับประกัน", "", "[ขั้นตอน]", "1. เปิดดูราคาประกาศล่าสุดของสมาคมค้าทองคำ", "2. เลือกร้านที่มีป้ายทองมาตรฐาน", "3. นำบัตรประชาชนไปด้วยเมื่อซื้อทองแท่ง", "4. รับใบรับประกันและเก็บไว้ใช้ตอนขายคืน", "",
+  "[แผนที่] เยาวราช กรุงเทพมหานคร @13.74191,100.50895", "",
+  "อ้างอิง: [สมาคมค้าทองคำ](https://example.com/gold)"];
+function runDemo() {
+  hangup(); ui.call.textContent = "วางสาย"; ui.call.className = "btn danger";
+  const t0 = performance.now();
+  const script = [
+    [300, () => onLog("started_talking")],
+    [2000, () => onLog("pause_detected")],
+    [2000, () => onEvent({ kind: "user", text: "ราคาทองวันนี้เท่าไหร่ และมีเอกสารเรื่องนี้ไหม" })],
+    [2600, () => onEvent({ kind: "status", text: "กำลังค้นหาในอินเทอร์เน็ต: ราคาทอง" })],
+    [2650, () => { onEvent({ kind: "team", id: 1, state: "run", worker: "web", task: "ราคาทองวันนี้" }); onEvent({ kind: "team", id: 2, state: "run", worker: "docs", task: "ทองคำ" }); }],
+    [3550, () => onEvent({ kind: "team", id: 1, state: "done", secs: 0.9 })],
+    [4250, () => onEvent({ kind: "team", id: 2, state: "done", secs: 1.6 })],
+    [4400, () => onEvent({ kind: "team", id: 3, state: "run", worker: "bcbrain", task: "ราคาทองในระบบ BC" })],
+    [4580, () => onEvent({ kind: "team", id: 3, state: "done", secs: 0.2 })],
+    [3600, () => onEvent({ kind: "info", source: "web", title: "ราคาทองคำวันนี้", snippet: "ทองคำแท่งรับซื้อ 40,000 บาท ขายออก 40,200 บาท ปรับตัวขึ้นเล็กน้อยจากเมื่อวาน", url: "https://example.com/gold", job: 1 })],
+    [4300, () => onEvent({ kind: "info", source: "docs", title: "รายงานการลงทุน Q3.pdf", snippet: "สรุปสัดส่วนการลงทุนในทองคำของพอร์ตบริษัท ปี 2569 หน้า 12", url: null, job: 2 })],
+    [5200, () => { onLog("response_starting"); onEvent({ kind: "bot", text: "วันนี้ทองคำแท่งขายออกประมาณสี่หมื่นสองร้อยบาท " }); }],
+    [7200, () => onEvent({ kind: "bot", text: "ผมเจอข้อมูลในเอกสารของคุณด้วย " })],
+    [9200, () => onEvent({ kind: "bot", text: "ต้องการให้สรุปรายละเอียดเพิ่มไหมครับ" })],
+    [4600, () => onEvent({ kind: "info", source: "bcbrain", title: "ขายสินค้า/บริการ และใบกำกับภาษีเต็มรูป", snippet: "วิธีออกใบกำกับภาษีขายเต็มรูปและการลงบัญชีในระบบ BC", url: null, slug: "doc-sale-invoice", job: 3 })],
+    // one panel event per line, as the server sends them
+    ...DEMO_MD.map((_, k) => [4800 + k * 120, () => onEvent({ kind: "panel", text: DEMO_MD.slice(0, k + 1).join("\n") })]),
+    [6500, () => showGesture("fingers_2")], // fake: visuals only, no /gesture fetch
+    [11200, () => onEvent({ kind: "done" })],
+  ];
+  for (const [d, fn] of script) demoTimers.push(setTimeout(fn, d));
+  // fake mic/bot levels so the orb moves without audio
+  demoTimers.push(setInterval(() => {
+    const s = (performance.now() - t0) / 1000, w = 0.5 + 0.5 * Math.sin(s * 9) * Math.sin(s * 2.3);
+    userLevel = state === "listening" ? 0.15 * w : 0; botLevel = state === "speaking" ? 0.2 * w : 0;
+  }, 40));
+}
+
+ui.call.onclick = () => {
+  if (pc || ui.call.textContent === "วางสาย") hangup();
+  else (demo ? runDemo() : start());
+};
+initTeam();
+initGesture();
+if (demo) runDemo();
+</script>
+</body>
+</html>
