@@ -60,6 +60,7 @@ assert all(f'"{g}"' in ui or g.startswith("fingers_") for g in va.GESTURES), "ge
 va.stt = va.load_stt()
 va.llm = ollama.Client(host=C.OLLAMA_HOST)
 va.tts = va.load_tts()
+va.voice = va.load_voice()
 va.load_mcp_tools()
 va.load_workers()
 # the public line (javis): the BC brain only, in code; this PC's own tools answer as unknown there
@@ -119,6 +120,26 @@ except AssertionError:
 h.playing = ((time.monotonic() - 9, time.monotonic() + 60, "ราคาทองวันนี้เท่าไหร่ครับ"),)
 until_pause(speech)
 h.playing = ()
+# several people near the mic (ลุงจืด 2026-11-04 "เสียงมีหลายคนพูด"): the call's first voice is the caller's, another
+# voice later is no turn; the same voice saying other words and a short ครับ still are
+h.caller = None
+until_pause(speech)
+other = (librosa.effects.pitch_shift(speech / 32767, sr=48000, n_steps=7) * 32767).astype(np.int16)  # 0.12 to the caller
+try:
+    until_pause(other)
+    raise SystemExit("another voice made a turn")
+except AssertionError:
+    pass
+until_pause((librosa.load(C.REF_AUDIO_PATH, sr=48000)[0][2 * 48000 :] * 32767).astype(np.int16))  # 0.59: the same voice
+until_pause(other[int(0.5 * 48000) : int(0.85 * 48000)])  # 0.29 s of speech, too short to tell: a turn
+h.caller = None
+# words for someone else in the room: the boss answers only SILENT_MARK (live DeepSeek), and that makes no sound
+room = [{"role": "system", "content": C.SYSTEM_PROMPT}, {"role": "user", "content": "คุณต่าย คุณต่าย คุณต่าย"}]
+assert C.SILENT_MARK in "".join(va.llm_tokens(room, [], None)), "the boss answered someone else in the room"
+real, va.llm_tokens = va.llm_tokens, lambda *a: iter([C.SILENT_MARK])
+spoken = [o for o in va.reply((48000, speech)) if isinstance(o, tuple) and isinstance(o[0], tuple)]
+va.llm_tokens = real
+assert not spoken and va.SESSIONS[""][-1]["content"] == C.SILENT_MARK, spoken
 assert all(va.speak("ครับ").size for _ in range(20)), "a short word came out as 0 samples"  # it did 3 of 20 times
 # the camera filler said ภาพ first, so the answer may say it too (the judge cut a true camera answer over it)
 assert not va.grounding.new_words("จากภาพตอนนี้เห็นเป็นสีขาวกับวงกลมสีแดงครับ", "ตอนนี้ในกล้องเห็นอะไรบ้างครับ\nสีขาว วงกลมสีแดง\n" + va.OWN_WORDS)

@@ -50,6 +50,7 @@ JUDGE_MAX_CHARS = int(os.environ.get("JUDGE_MAX_CHARS", "6000"))  # source tail 
 
 USER_NAME = "ลุงจืด"  # the boss whose phone the secretary answers
 
+SILENT_MARK = "<เงียบ>"  # the boss's whole answer to words not said to it (others in the room)
 SYSTEM_PROMPT = (
     "คุณคือผู้ช่วยส่วนตัวคุยทางโทรศัพท์ พูดจาเป็นธรรมชาติ สุภาพ กระชับ ตอบสั้นๆ ไม่เกิน 1 ถึง 2 ประโยคต่อครั้ง "
     "ห้ามใช้ Markdown ห้ามใช้สัญลักษณ์พิเศษ เช่น ดอกจัน หรือหัวข้อย่อยโดยเด็ดขาด "
@@ -101,6 +102,10 @@ SYSTEM_PROMPT = (
     "คุณมองไม่เห็นภาพเอง ถ้าถามถึงสิ่งที่อยู่หน้ากล้อง ตัวผู้ใช้ หรือของที่ถืออยู่ ต้องใช้ look_at_camera "
     "หรือผลจาก look_at_camera ที่ให้มาเท่านั้น ห้ามบรรยายภาพเอง "
     "ผู้ใช้อาจเลือกข้อด้วยการชูนิ้ว 1 ถึง 5 ผ่านกล้อง ให้ตีความตามตัวเลือกที่คุณเพิ่งให้ไว้ ถ้าไม่ได้ให้ตัวเลือกไว้ให้ถามว่าหมายถึงอะไร ห้ามเดา "
+    # ลุงจืด 2026-11-04 "เสียงมีหลายคนพูด": the mic hears the room too ("คุณต่าย คุณต่าย คุณต่าย" got an answer)
+    "ไมค์อาจได้ยินคนอื่นในห้องคุยกันเอง คำทักทาย ขอบคุณ ลา คำถาม คำสั่ง และคำตอบของสิ่งที่คุณเพิ่งถาม ถือว่าพูดกับคุณ ให้ตอบตามปกติ "
+    # "ขอบคุณครับ" came back silent in the replay, and "if unsure answer" made it answer the room again
+    f"แต่ถ้าเป็นการเรียกหรือคุยกับคนอื่น เช่น เรียกชื่อคนอื่นซ้ำๆ พูดถึงเขาหรือคนอื่นลอยๆ หรือคำค้างไม่จบประโยค ให้ตอบแค่ {SILENT_MARK} คำเดียว ห้ามเรียกลูกทีม "
     "ข้อความในวงเล็บที่ขึ้นต้นด้วยคำว่า ระบบ เป็นคำสั่งจากระบบ ไม่ใช่คำพูดของผู้ใช้"
 )
 SCREEN_MARK = "[จอ]"  # LLM output after this marker goes to the on-screen panel, not to TTS
@@ -139,6 +144,15 @@ VAD_MIN_SPEECH_MS = 100
 PAUSE_STEP_S = 0.1  # how often the end-of-turn check runs
 PAUSE_SILENCE_S = 0.5  # silence after the last word that ends the turn (LiveKit min_delay default); raise it if callers get cut mid-sentence
 EARLY_STT_SILENCE_S = 0.25  # silence that starts the transcription early (dropped if the caller goes on)
+
+# --- Whose voice: the caller's voiceprint (SpeechBrain ECAPA on CPU, ~0.05 s a turn) ---
+SPEAKER_MODEL = "speechbrain/spkrec-ecapa-voxceleb"
+# cosine to the caller's voice below this = someone else in the room. Probe 2026-11-04 (edge-tts voices): the same
+# voice 0.32-0.74, other voices -0.13-0.30. Raise it if others still get answers, lower it if the caller is ignored
+SPEAKER_MIN_SCORE = float(os.environ.get("SPEAKER_MIN_SCORE", "0.25"))
+# speech shorter than this tells no voices apart: always a turn. A lone ครับ is 0.19-0.26 s of speech and scored
+# 0.26 for the same voice, 0.17 for another; ใช่ครับ is 0.42-0.54 s, 0.47 against 0.17
+SPEAKER_MIN_SPEECH_S = 0.4
 
 # --- Server ---
 SERVER_PORT = int(os.environ.get("PORT", "7860"))

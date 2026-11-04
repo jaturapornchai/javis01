@@ -41,6 +41,7 @@ from fastrtc.utils import create_message
 from omnivoice import OmniVoice
 from omnivoice.models.omnivoice import OmniVoiceGenerationConfig
 from pypdf import PdfReader
+from speechbrain.inference.speaker import EncoderClassifier
 
 import config as C
 import desktop_agent
@@ -96,8 +97,26 @@ def to16k(audio):  # fastrtc frames -> what Whisper and its VAD take
     return data if sr == 16000 else librosa.resample(data, orig_sr=sr, target_sr=16000)
 
 
-def stt_hears(audio):  # transcribe()'s own VAD with its settings: False = it would transcribe nothing
-    return bool(get_speech_timestamps(to16k(audio), VadOptions(**C.STT_VAD_PARAMS)))
+def voiced(audio):
+    """The speech only, 16 kHz, by transcribe()'s own VAD: empty = it would transcribe nothing. No padding (its
+    0.4 s a side made a 0.5 s word 2 s long), so the length is the speech's own and the voiceprint hears no silence."""
+    data = to16k(audio)
+    spans = get_speech_timestamps(data, VadOptions(**C.STT_VAD_PARAMS, speech_pad_ms=0))
+    return np.concatenate([data[:0], *(data[t["start"] : t["end"]] for t in spans)])
+
+
+def stt_hears(audio):
+    return voiced(audio).size > 0
+
+
+def load_voice():  # CPU: the GPU runs the STT and the TTS
+    return EncoderClassifier.from_hparams(source=C.SPEAKER_MODEL, run_opts={"device": "cpu"})
+
+
+def voiceprint(speech):  # 16 kHz speech -> unit-length ECAPA embedding
+    with torch.inference_mode():  # ponytail: 8 s of a turn is plenty and caps the time
+        e = voice.encode_batch(torch.from_numpy(speech[: 16000 * 8])[None]).squeeze()
+    return e / e.norm()
 
 
 def transcribe(audio):
@@ -734,6 +753,10 @@ def reply(audio, public=False):
             tokens = llm_tokens(messages, calls, specs if rnd < C.MAX_TOOL_ROUNDS else None)
             said_before, mark = len(said), time.perf_counter()  # mark: where each phrase's own time starts
             for chunk in chunk_sentences(until_screen(tokens, screen)):
+                if C.SILENT_MARK in chunk:  # the words were for someone else in the room: no answer at all
+                    log.info("not said to the secretary: no answer")
+                    turn["silent"] = True
+                    break
                 if text := clean(chunk):
                     got = time.perf_counter()
                     # ห้ามแต่ง: a phrase with an unsourced number or fact is dropped; one line at the end says so
@@ -753,6 +776,8 @@ def reply(audio, public=False):
                     mark = time.perf_counter()
                     said.append(text)
                     yield (C.TTS_SAMPLE_RATE, wav), AdditionalOutputs({"kind": "bot", "text": text})
+            if turn.get("silent"):
+                break
             yield from panel_events(tokens, screen, known, sources, turn)
             if not calls:
                 break
@@ -768,7 +793,7 @@ def reply(audio, public=False):
             yield (C.TTS_SAMPLE_RATE, speak(text)), AdditionalOutputs({"kind": "bot", "text": text})
     finally:  # also runs after barge-in; history may hold a chunk that was queued but cut before playback
         details = turn.get("panel", "")  # only lines that passed both checks; an unchecked rest is no memory
-        answer = " ".join(said) + (f"\n{C.SCREEN_MARK}\n{details[:800]}" if details else "")
+        answer = C.SILENT_MARK if turn.get("silent") else " ".join(said) + (f"\n{C.SCREEN_MARK}\n{details[:800]}" if details else "")
         history.extend([{"role": "user", "content": asked}, {"role": "assistant", "content": answer}])
         del history[: -2 * C.HISTORY_TURNS]
         save_session(sid, history)
@@ -836,6 +861,7 @@ def warm_up():
     hello = [{"role": "system", "content": C.SYSTEM_PROMPT}, {"role": "user", "content": "สวัสดี"}]
     list(llm_tokens(hello, [], TOOL_SPECS))
     FILLERS.update({name: speak(text) for name, text in FILLER_TEXT.items()})
+    voiceprint(np.zeros(16000, np.float32))  # the first call of a model is the slow one
     log.info("warm-up done in %.1fs", time.perf_counter() - t0)
 
 
@@ -892,8 +918,9 @@ class BargeInReplyOnPause(ReplyOnPause):
         # 2026-11-04 15:51:55: 1.2 s of echo or noise passed fastrtc's VAD (100 ms of speech is enough there), its
         # pause killed a four-tool answer mid-search, and the STT then found no speech in it at all: 34 s of silence.
         # The STT's own VAD decides now: what it would not transcribe is no turn and cuts nothing. ~10 ms a pause
-        if state.pause_detected and state.stream is not None and (not stt_hears((state.sampling_rate, state.stream))
-                                                                   or self.hears_itself(state)):
+        if state.pause_detected and state.stream is not None and (
+                not (speech := voiced((state.sampling_rate, state.stream))).size or self.hears_itself(state)
+                or self.not_the_caller(state, speech)):
             state.pause_detected = state.started_talking = False
             state.stream = None
             EARLY.pop(id(self), None)
@@ -927,6 +954,22 @@ class BargeInReplyOnPause(ReplyOnPause):
         if echo := grounding.is_echo(heard, spoken):
             log.info("echo of its own voice, not a turn: %s", masked(heard))
         return echo
+
+    caller = None  # this call's voiceprint: the sum of the caller's turns so far
+
+    def not_the_caller(self, state, speech):
+        """Several people near the mic (ลุงจืด 2026-11-04 "เสียงมีหลายคนพูด": "คุณต่าย คุณต่าย คุณต่าย" from someone
+        else in the room got an answer). The call's first turn is the caller's voice; a later turn in another voice
+        is no turn and cuts nothing off. ponytail: whoever speaks first is the caller; a "this is me" button if
+        someone else keeps getting there first"""
+        if speech.size < C.SPEAKER_MIN_SPEECH_S * 16000:  # ครับ, ใช่: too short to tell voices apart
+            return False
+        e = voiceprint(speech)
+        if self.caller is not None and (score := float(e @ self.caller / self.caller.norm())) < C.SPEAKER_MIN_SCORE:
+            log.info("another voice (%.2f), not the caller: %s", score, masked(early_words(state.stream) or ""))
+            return True
+        self.caller = e if self.caller is None else self.caller + e
+        return False
 
     def push_turn(self, interrupt):
         """Start a reply with no speech (gesture, typed chat, system note), like receive() does on a pause; `interrupt` also cuts the bot off."""
@@ -1073,6 +1116,7 @@ if __name__ == "__main__":
         raise SystemExit("DEEPSEEK_API_KEY is not set: put it in .env (the boss runs on DeepSeek)")
     llm = ollama.Client(host=C.OLLAMA_HOST)  # the camera and the judge (VISION_MODEL)
     tts = load_tts()
+    voice = load_voice()
     load_mcp_tools()
     load_workers()
     log.info("STT=%s (%s) BOSS=%s VISION=%s TTS=%s", C.STT_MODEL, C.DEVICE, C.DEEPSEEK_MODEL, C.VISION_MODEL, C.TTS_MODEL)
