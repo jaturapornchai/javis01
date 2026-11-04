@@ -143,6 +143,25 @@ assert not spoken and va.SESSIONS[""][-1]["content"] == C.SILENT_MARK, spoken
 assert all(va.speak("ครับ").size for _ in range(20)), "a short word came out as 0 samples"  # it did 3 of 20 times
 # the camera filler said ภาพ first, so the answer may say it too (the judge cut a true camera answer over it)
 assert not va.grounding.new_words("จากภาพตอนนี้เห็นเป็นสีขาวกับวงกลมสีแดงครับ", "ตอนนี้ในกล้องเห็นอะไรบ้างครับ\nสีขาว วงกลมสีแดง\n" + va.OWN_WORDS)
+# DeepSeek sometimes writes a tool call as its own DSML text (a call spoke "<｜｜DSML｜｜ invoke ..." and searched
+# nothing): none of it reaches the caller, and the call still runs
+DSML_TOKENS = ["เข้าใจครับ <", '｜｜DSML｜｜calls>\n<｜｜DSML｜｜invoke name="read_note">\n<｜｜DSML｜｜parameter name="slug" '
+               'string="true">pos-overview</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name="limit" string="false">5',
+               "</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜calls>"]
+
+
+class FakeDeepSeek:  # the SSE stream of that reply
+    def stream(self, *a, **k): return self
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def raise_for_status(self): pass
+    def iter_lines(self): return (f"data: {json.dumps({'choices': [{'delta': {'content': t}}]})}" for t in DSML_TOKENS)
+
+
+real, va.DEEPSEEK, calls = va.DEEPSEEK, FakeDeepSeek(), []
+said = "".join(va.deepseek_tokens([], calls, [{}]))
+va.DEEPSEEK = real
+assert said.strip() == "เข้าใจครับ" and [(c["name"], c["args"]) for c in calls] == [("read_note", {"slug": "pos-overview", "limit": 5})], (said, calls)
 # DeepSeek down (here: a bad key) -> the caller hears the apology, nothing made up
 key, C.DEEPSEEK_API_KEY = C.DEEPSEEK_API_KEY, "sk-invalid"
 assert "".join(va.llm_tokens([{"role": "user", "content": "พูดคำว่า สวัสดี"}], [], None)) == va.BRAIN_DOWN

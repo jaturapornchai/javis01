@@ -450,12 +450,35 @@ def save_session(sid, history):
 DEEPSEEK = httpx.Client(limits=httpx.Limits(keepalive_expiry=60))
 
 
+# DeepSeek V4 sometimes writes a tool call as its own markup in the text instead of tool_calls (a known leak,
+# e.g. github.com/anomalyco/opencode/pull/60575): <｜DSML｜tool_calls>, also with doubled bars or a "calls" wrapper
+DSML_BAR = r"[｜|]+"
+DSML_START = re.compile(rf"<{DSML_BAR}DSML")
+DSML_INVOKE = re.compile(rf'<{DSML_BAR}DSML{DSML_BAR}invoke\s+name="([^"]+)"\s*>(.*?)</{DSML_BAR}DSML{DSML_BAR}invoke>', re.S)
+DSML_PARAM = re.compile(rf'<{DSML_BAR}DSML{DSML_BAR}parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)'
+                        rf'</{DSML_BAR}DSML{DSML_BAR}parameter>', re.S)
+
+
+def dsml_calls(markup):
+    """The tool calls in DeepSeek's DSML text, as deepseek_tokens builds them from tool_calls."""
+    calls = []
+    for n, (name, body) in enumerate(DSML_INVOKE.findall(markup)):
+        args = {}
+        for key, is_string, value in DSML_PARAM.findall(body):
+            try:  # string="false": a JSON value (number, bool, list)
+                args[key] = value if is_string != "false" else json.loads(value)
+            except ValueError:
+                args[key] = value
+        calls.append({"id": f"dsml-{n}", "name": name, "args": args})
+    return calls
+
+
 def deepseek_tokens(messages, calls, tools):
     """The boss on DeepSeek (OpenAI-style SSE). A tool call arrives in pieces (id and name first, then bits of
     its JSON arguments), so calls are put together when the stream ends."""
     body = {"model": C.DEEPSEEK_MODEL, "messages": messages, "stream": True, "temperature": C.LLM_TEMPERATURE,
             "thinking": {"type": "disabled"}, **({"tools": tools} if tools else {})}  # thinking: +seconds per turn
-    parts = {}
+    parts, held, markup = {}, "", ""  # held: a tail that may be the start of DSML; markup: the DSML itself
     with DEEPSEEK.stream("POST", f"{C.DEEPSEEK_URL}/chat/completions", json=body, timeout=C.DEEPSEEK_TIMEOUT,
                       headers={"Authorization": f"Bearer {C.DEEPSEEK_API_KEY}"}) as r:
         r.raise_for_status()
@@ -470,7 +493,22 @@ def deepseek_tokens(messages, calls, tools):
                     p["id"] += tc.get("id") or ""
                     p["name"] += fn.get("name") or ""
                     p["args"] += fn.get("arguments") or ""
-                yield delta.get("content") or ""
+                if markup:  # past the start of the markup: no more words for the caller
+                    markup += delta.get("content") or ""
+                    continue
+                held += delta.get("content") or ""
+                if m := DSML_START.search(held):
+                    yield held[: m.start()]
+                    held, markup = "", held[m.start() :]
+                    continue
+                cut = held.rfind("<")  # ponytail: a "<" waits up to 12 characters to see if DSML follows
+                cut = len(held) if cut == -1 or len(held) - cut > 12 else cut
+                yield held[:cut]
+                held = held[cut:]
+    yield held
+    if markup and not parts and tools:  # with no tools offered there is nothing to run: the markup just goes
+        log.info("DeepSeek wrote its tool call as text: %s", ", ".join(c["name"] for c in dsml_calls(markup)) or "none whole")
+        calls.extend(dsml_calls(markup))
     for p in parts.values():
         try:
             args = json.loads(p["args"] or "{}")
@@ -561,13 +599,21 @@ def judge_format(new):  # one entry per new word, those words only: shorter outp
 JUDGE_ASK = (
     "SOURCES:\n{src}\n\nA Thai voice assistant already said: {before}\nIt now wants to say: {piece}\n"
     "Words of it that appear nowhere in SOURCES: {new}\n\n"
-    "Give each of those words a type. talk = a word about the conversation itself, not about the world: a greeting, "
-    "polite word, pronoun, asking, meaning, helping, finding, knowing, checking, being connected (ผม, หมายถึง, เช็ก, "
-    "ไม่พบ), or a word of a question that asks how the user is or which one they mean (เหนื่อยไหม, สาขาไหน); a thing, "
-    "place or event the question brings up is still new_info. same_as_source = a Thai reading, other spelling or plain synonym of a word that IS in SOURCES; put that "
-    "SOURCES word in source_word (แฟล็ก -> flag). new_info = anything about the world that SOURCES do not say: a "
-    "thing, place, feature, price, day, weather, person, team, event, action, step or condition (ส่งฟรี, ฝนตก, "
-    "วันเสาร์, ต้องเซ็นชื่อ). source_word is \"\" unless same_as_source. Answer JSON.")
+    # ลุงจืด 2026-11-04 "ให้คุยเหมือนเพื่อน": a question about the caller's own side is talk (the judge cut
+    # "สองสาขานี่สต็อกแยกกันหรือใช้ร่วมกันครับ"), a guess or offer is not. Eval on recorded calls: 2 of 19 wrong, was 5
+    "Give each of those words a type. talk = a word about the conversation itself (a greeting, polite word, "
+    "pronoun, asking, meaning, helping, finding, knowing, checking, being connected: ผม, หมายถึง, เช็ก, ไม่พบ), "
+    "or a word the assistant uses to ask the user about the user's own side (their shop, work, way of doing "
+    "things, stock, branches, bills, problem, wish or feeling) or to react kindly to what the user just said "
+    "(เหนื่อยไหม, สาขาไหน, ติดปัญหาตรงไหน, สต็อกแยกกันหรือใช้ร่วมกัน, ช้าตอนพิมพ์, อยากให้ช่วยคำนวณให้เองใช่ไหม, "
+    "เดินทางลำบาก, ยินดีที่ได้รู้จัก, ไม่ต้องรีบ). same_as_source = a Thai reading, other spelling or plain "
+    "synonym of a word that IS in SOURCES; put that SOURCES word in source_word (แฟล็ก -> flag). new_info = "
+    "anything the assistant states or offers about itself, its product, a service or the world that SOURCES do "
+    "not say, even inside a question, and any guess or advice it states (not asks) about the user, their shop or "
+    "their customers (น่าจะชอบ, ต้องระวัง): a feature, service, price, free thing, discount, trial, visit, "
+    "promise, place, day, weather, person, team, event, step or condition (ส่งฟรี, ไปติดตั้งให้, ทดลองใช้ฟรี, "
+    "รองรับหลายสาขา, วันเสาร์, ต้องเซ็นชื่อ). source_word is \"\" unless same_as_source. Answer JSON."
+)
 # said once at the end of an answer that had phrases cut (ลุงจืด 2026-11-04): a cut phrase said in place
 # broke the answer up ("ส่วนนี้ผมไม่เจอ... หรือครับ ให้ช่วยอะไรครับ")
 CUT_END = "ส่วนที่เหลือผมไม่เจอในแหล่งข้อมูล ขอไม่เดานะครับ"
