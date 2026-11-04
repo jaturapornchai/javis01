@@ -2,7 +2,7 @@
 
 Browser (static/index.html: mic over WebRTC, camera frames, MediaPipe gestures, three.js screen)
     -> FastRTC (Silero VAD pause detection, barge-in) -> faster-whisper Thai (STT)
-    -> Ollama Typhoon 2.5 streaming + tools (web, docs, camera, bcbrain MCP)
+    -> DeepSeek streaming + tools (web, docs, camera, bcbrain MCP)
     -> spoken summary -> OmniVoice -> speaker;   details after [จอ] -> on-screen panel
 
 Run: python voice_agent.py   then open http://127.0.0.1:7860
@@ -90,16 +90,6 @@ def load_stt():
         return WhisperModel(C.STT_MODEL, device="cpu", compute_type="int8")
 
 
-def pick_llm(client):
-    if C.LLM_MODEL:
-        return C.LLM_MODEL
-    names = {m.model for m in client.list().models}
-    for name in C.LLM_CANDIDATES:
-        if name in names or f"{name}:latest" in names:
-            return name
-    raise SystemExit(f"No LLM found in Ollama. Run: ollama pull {C.LLM_CANDIDATES[0]}")
-
-
 def to16k(audio):  # fastrtc frames -> what Whisper and its VAD take
     sr, data = audio
     data = audio_to_float32(np.squeeze(data))
@@ -120,6 +110,19 @@ def transcribe(audio):
         without_timestamps=True,  # the Thai distil model was fine-tuned without timestamp tokens
     )
     return "".join(s.text for s in segments).strip()
+
+
+EARLY = {}  # handler -> (the speech so far, its transcription job), started in the silence before a turn ends
+EARLY_STT = ThreadPoolExecutor(2)  # ponytail: CTranslate2 runs one GPU job at a time anyway
+
+
+def early_words(data):
+    """What determine_pause already transcribed of this very speech (the caller said nothing after it), else None."""
+    flat = data.reshape(-1)
+    for key, (head, job) in list(EARLY.items()):
+        if head.size <= flat.size and np.array_equal(head, flat[: head.size]) and EARLY.pop(key, None):
+            return job.result()
+    return None
 
 
 NUM_WORDS = [*"0123456789", *grounding.DIGIT_WORDS, *grounding.UNIT]
@@ -188,10 +191,15 @@ TTS_LOCK = threading.Lock()  # ponytail: one OmniVoice phrase at a time for ever
 
 def speak(text):
     model, voice = tts
-    with TTS_LOCK:
-        wav = model.generate(text=text, language="th", voice_clone_prompt=voice, speed=C.TTS_SPEED,
-                             generation_config=OmniVoiceGenerationConfig(num_step=C.TTS_STEP, guidance_scale=C.TTS_CFG))[0]
-    return np.asarray(wav, dtype=np.float32).reshape(1, -1)
+    # a lone short word ("ครับ") now and then comes out all silence, which OmniVoice trims to 0 samples (3 of 20
+    # tries): the caller hears nothing and PyAV's resampler fails on the empty frame. Ceiling: 3 tries, then 0.1 s quiet
+    for _ in range(3):
+        with TTS_LOCK:
+            wav = np.asarray(model.generate(text=text, language="th", voice_clone_prompt=voice, speed=C.TTS_SPEED,
+                             generation_config=OmniVoiceGenerationConfig(num_step=C.TTS_STEP, guidance_scale=C.TTS_CFG))[0], dtype=np.float32)
+        if wav.size:
+            return wav.reshape(1, -1)
+    return np.zeros((1, C.TTS_SAMPLE_RATE // 10), np.float32)
 
 
 # ---------------------------------------------------------------- tools: each returns (cards for the screen, text for the LLM)
@@ -418,9 +426,6 @@ def save_session(sid, history):
         os.replace(path + ".tmp", path)
 
 
-LLM_OPTIONS = {"num_ctx": C.LLM_NUM_CTX, "temperature": C.LLM_TEMPERATURE, **({"num_gpu": C.LLM_NUM_GPU} if C.LLM_NUM_GPU >= 0 else {})}
-
-
 # one kept-alive connection: a fresh TLS handshake each call cost ~0.16 s before the first word (measured
 # 2026-11-04, 12 s between calls); httpx drops idle ones after 5 s by default, turns come every 10-20 s
 DEEPSEEK = httpx.Client(limits=httpx.Limits(keepalive_expiry=60))
@@ -455,34 +460,19 @@ def deepseek_tokens(messages, calls, tools):
         calls.append({"id": p["id"], "name": p["name"], "args": args if isinstance(args, dict) else {}})
 
 
-def ollama_tokens(messages, calls, tools):
-    """The local boss. Ollama names a tool result by tool_name (no ids) and wants arguments as a dict."""
-    names = {c["id"]: c["function"]["name"] for m in messages for c in m.get("tool_calls", [])}
-    local = [{"role": "tool", "tool_name": names.get(m["tool_call_id"], ""), "content": m["content"]} if m["role"] == "tool"
-             else {**m, "tool_calls": [{"function": {"name": c["function"]["name"], "arguments": json.loads(c["function"]["arguments"])}}
-                                       for c in m["tool_calls"]]} if m.get("tool_calls") else m for m in messages]
-    for part in llm.chat(model=LLM_MODEL, messages=local, tools=tools, stream=True, think=False, keep_alive=-1, options=LLM_OPTIONS):
-        calls.extend({"id": f"call_{next(JOB_IDS)}", "name": c.function.name, "args": dict(c.function.arguments or {})}
-                     for c in part.message.tool_calls or [])
-        yield part.message.content or ""
-
-
 def llm_tokens(messages, calls, tools):
-    """DeepSeek when a key is set; the local LLM when DeepSeek fails before saying anything (network, quota, key)."""
-    if C.DEEPSEEK_API_KEY:
-        spoke = False
-        try:
-            for tok in deepseek_tokens(messages, calls, tools):
-                spoke = spoke or bool(tok)
-                yield tok
-            return
-        except (httpx.HTTPError, ValueError, KeyError) as e:
-            log.warning("DeepSeek failed (%s %s)%s", type(e).__name__, getattr(getattr(e, "response", None), "status_code", ""),
-                        "" if spoke else f" -> local {LLM_MODEL}")
-            if spoke:  # half an answer is already out: end the turn rather than say it twice
-                return
-            calls.clear()
-    yield from ollama_tokens(messages, calls, tools)
+    """The boss on DeepSeek. If it fails before saying anything (network, quota, key) the caller hears BRAIN_DOWN,
+    never a guess; half an answer already out just ends the turn."""
+    spoke = False
+    try:
+        for tok in deepseek_tokens(messages, calls, tools):
+            spoke = spoke or bool(tok)
+            yield tok
+    except (httpx.HTTPError, ValueError, KeyError) as e:
+        log.warning("DeepSeek failed (%s %s)", type(e).__name__, getattr(getattr(e, "response", None), "status_code", ""))
+        calls.clear()
+        if not spoke:
+            yield BRAIN_DOWN
 
 
 GEO, GEO_LOCK, GEO_LAST = {}, threading.Lock(), [0.0]  # place -> "lat,lon" (found ones only)
@@ -536,7 +526,9 @@ SAY_WORDS = (f"{C.USER_NAME} จากคลังความรู้บีซ
              "ขั้นตอน แผนที่ "  # the panel's [ขั้นตอน] and [แผนที่] line marks
              # pronouns and polite talk: the judge still called ผม / เดี๋ยว new_info now and then and cut a whole line
              "ผม ดิฉัน คุณ ครับ ค่ะ คะ ยินดี ขอบคุณ ขอโทษ เดี๋ยว ขอ ถาม ทราบ รับทราบ เวลา ช่วย ตอนนี้ ก่อน "
-             "บีซีเอไอแอคเคาท์ บีซี เอไอ แอคเคาท์ BC Ai Account")
+             # what it sells and asks about (the prompt's sales lines are no source): the judge cut "ผมช่วยเรื่อง
+             # โปรแกรมบีซีเอไอแอคเคาท์ครับ" over โปรแกรม, and a customer's "ช่วยอะไรได้บ้าง" got silence
+             "โปรแกรมบีซีเอไอแอคเคาท์ บีซี เอไอ แอคเคาท์ BC Ai Account การใช้งาน")
 # the judge sorts only the words code found in no source: asked "is this sentence backed?" the 8B model said yes to
 # almost anything (weather, free parking, a made-up email), asked word by word it caught them (20/23 in a replay)
 def judge_format(new):  # one entry per new word, those words only: shorter output, none skipped or added
@@ -561,6 +553,10 @@ JUDGE_ASK = (
 # broke the answer up ("ส่วนนี้ผมไม่เจอ... หรือครับ ให้ช่วยอะไรครับ")
 CUT_END = "ส่วนที่เหลือผมไม่เจอในแหล่งข้อมูล ขอไม่เดานะครับ"
 CUT_ALL = "เรื่องนี้ผมไม่เจอในแหล่งข้อมูลครับ ขอไม่เดานะครับ"
+BRAIN_DOWN = "ขอโทษครับ ตอนนี้ระบบตอบไม่ได้ชั่วคราว รบกวนถามใหม่อีกครั้งนะครับ"
+# the secretary's own fixed lines: a word a filler already said ("ขอดูภาพจากกล้อง") is no new claim when the answer
+# repeats it. The judge cut "จากภาพตอนนี้เห็นเป็นสีขาวกับวงกลมสีแดงครับ" over ภาพ though the camera saw exactly that
+OWN_WORDS = "\n".join([SAY_WORDS, BRAIN_DOWN, *FILLER_TEXT.values()])
 
 
 def judge(sources, piece, before):
@@ -582,8 +578,9 @@ def judge(sources, piece, before):
 
 
 def worker_chat(messages, tools):
-    """A worker's own (non-streaming) brain call: same model and options as the boss, so nothing new loads."""
-    return llm.chat(model=LLM_MODEL, messages=messages, tools=tools, think=False, keep_alive=-1, options=LLM_OPTIONS).message
+    """A worker's own brain call, on DeepSeek like the boss: (text, calls)."""
+    calls = []
+    return "".join(deepseek_tokens(messages, calls, tools)), calls
 
 
 def load_workers():
@@ -667,7 +664,9 @@ def reply(audio, public=False):
     t0 = time.perf_counter()
     tools, specs, prompt = (PUBLIC["tools"], PUBLIC["specs"], PUBLIC["prompt"]) if public else (TOOLS, TOOL_SPECS, C.SYSTEM_PROMPT)
     sr, data = audio
-    heard = transcribe(audio) if data.size > sr * 0.3 else ""  # gesture/chat/system turns carry no audio
+    heard = early_words(data) if data.size > sr * 0.3 else ""  # gesture/chat/system turns carry no audio
+    if heard is None:  # no early transcription of this speech
+        heard = transcribe(audio)
     heard = " ".join(x for x in (heard, take("text", "")) if x)  # typed chat joins (or replaces) the speech
     gesture, note = take_gesture(), take("note", "")
     if not heard and not gesture and not note:
@@ -704,6 +703,7 @@ def reply(audio, public=False):
         # caller's previous words. Ceiling: a 20-character cut; the boss can still search again itself
         last = next((m["content"].splitlines()[0] for m in reversed(history) if m["role"] == "user" and m["content"]), "")
         query = f"{last} {heard}" if len(heard) < 20 and last and not last.startswith("(") else heard
+        query = " ".join([query, *grounding.acronyms(query)])  # Whisper writes "ระบบ POS" as ระบบพีโอเอส; notes say POS
         calls = [(n, {"query": LONG_NUMBER.sub("", query) if n == "search_brain" else query}) for n in ("search_brain", "search_docs") if n in tools]
         texts = yield from dispatch(calls, said, {"filled": True}, tools)
         # snippets are only summaries and the boss never calls read_note itself: "ยกเลิกยังไง" got a made-up
@@ -730,22 +730,27 @@ def reply(audio, public=False):
             # what the judge may accept: this turn's question, prefetch and tool results, earlier turns, and what
             # load_workers said is true of this setup (Google not connected, the team); fixed within a round so
             # Ollama reuses its cached prefix
-            sources = "\n".join([*(m["content"] for m in messages[1:]), prompt.removeprefix(BASE_PROMPT), SAY_WORDS])
+            sources = "\n".join([*(m["content"] for m in messages[1:]), prompt.removeprefix(BASE_PROMPT), OWN_WORDS])
             tokens = llm_tokens(messages, calls, specs if rnd < C.MAX_TOOL_ROUNDS else None)
-            said_before = len(said)
+            said_before, mark = len(said), time.perf_counter()  # mark: where each phrase's own time starts
             for chunk in chunk_sentences(until_screen(tokens, screen)):
                 if text := clean(chunk):
+                    got = time.perf_counter()
                     # ห้ามแต่ง: a phrase with an unsourced number or fact is dropped; one line at the end says so
                     if bad := grounding.unsourced(text, known):
                         log.info("cut a sentence: numbers %s are in no source: %s", masked(" ".join(sorted(bad))), masked(text))
                         turn["cut"] = True
                         continue
                     if not judge(sources, text, " ".join(said)):
-                        log.info("cut a sentence: the judge found no source for it: %s", masked(text))
+                        log.info("cut a sentence (judge %.2fs): the judge found no source for it: %s", time.perf_counter() - got, masked(text))
                         turn["cut"] = True
                         continue
+                    judged = time.perf_counter()
                     wav = speak(text)
-                    log.info("BOT  (%.2fs): %s", time.perf_counter() - t0, masked(text))
+                    # which part is slow, per phrase: the boss writing it, the judge, the voice
+                    log.info("BOT  (%.2fs | boss %.2f judge %.2f voice %.2f): %s", time.perf_counter() - t0, got - mark,
+                             judged - got, time.perf_counter() - judged, masked(text))
+                    mark = time.perf_counter()
                     said.append(text)
                     yield (C.TTS_SAMPLE_RATE, wav), AdditionalOutputs({"kind": "bot", "text": text})
             yield from panel_events(tokens, screen, known, sources, turn)
@@ -826,13 +831,10 @@ async def remind_loop(stream):
 def warm_up():
     t0 = time.perf_counter()
     stt.transcribe(np.zeros(16000, dtype=np.float32), language=C.STT_LANGUAGE)
-    # vision first: the brain's num_gpu then fits around it, so neither evicts the other
     llm.chat(model=C.VISION_MODEL, messages=[{"role": "user", "content": "สวัสดี"}], think=False, keep_alive=-1)
-    # same system prompt + tools as real calls -> Ollama caches that KV prefix, so the first real reply is fast
+    # same system prompt + tools as real calls: DeepSeek caches that prefix and the connection stays open
     hello = [{"role": "system", "content": C.SYSTEM_PROMPT}, {"role": "user", "content": "สวัสดี"}]
-    list(ollama_tokens(hello, [], TOOL_SPECS))  # the fallback boss and the computer worker stay warm too
-    if C.DEEPSEEK_API_KEY:
-        list(llm_tokens(hello, [], TOOL_SPECS))
+    list(llm_tokens(hello, [], TOOL_SPECS))
     FILLERS.update({name: speak(text) for name, text in FILLER_TEXT.items()})
     log.info("warm-up done in %.1fs", time.perf_counter() - t0)
 
@@ -852,15 +854,79 @@ class BargeInReplyOnPause(ReplyOnPause):
         for field in ("stream", "buffer", "sampling_rate", "started_talking"):
             setattr(self.state, field, getattr(old, field))
 
+    def determine_pause(self, audio, sampling_rate, state):
+        """LiveKit-style endpointing. fastrtc looked for silence in fixed 0.6 s chunks, so it saw the end of a turn
+        0.6-1.2 s late; this checks the last second every PAUSE_STEP_S, and the turn ends PAUSE_SILENCE_S after the
+        last word. At EARLY_STT_SILENCE_S the speech so far is transcribed already; reply() takes those words if the
+        caller said nothing more (LiveKit's preemptive generation, the STT part only: the boss's tools can act)."""
+        step, window = int(sampling_rate * C.PAUSE_STEP_S), int(sampling_rate * (C.PAUSE_SILENCE_S + 0.4))
+        if len(audio) < (step if state.started_talking else window):
+            return False
+        if state.started_talking:
+            state.stream, state.buffer = np.concatenate((state.stream, audio)), None
+            recent = state.stream[-window:]
+        else:  # waiting for speech: the last second carries over, so the turn starts with its first word
+            recent, state.buffer = audio[-window:], audio[-(window - step):]
+        _, chunks = self.model.vad((sampling_rate, recent), self.model_options)
+        silence = len(recent) / sampling_rate - (chunks[-1]["end"] / 16000 if chunks else 0)  # vad() works at 16 kHz
+        if not state.started_talking:
+            if not chunks:
+                return False
+            state.started_talking, state.stream, state.buffer = True, recent, None
+            self.send_message_sync(create_message("log", "started_talking"))  # the page turns the secretary down
+        early = EARLY.get(id(self))
+        # speech past what was transcribed early makes it out of date; a speech end the sliding VAD merely moves a
+        # little (through Opus it does) inside the transcribed audio does not. No speech in the window: the speech
+        # end did not move, `silence` is just capped at the window. Without `chunks` every 0.9 s of quiet counted as
+        # new words and re-ran the STT on the whole, growing turn (2026-11-04 19:46: 36 s of audio once a second
+        # while the reply was busy, 20 s before the caller's words came out)
+        if early and chunks and state.stream.size - silence * sampling_rate > early[0].size:
+            EARLY.pop(id(self), None)[1].cancel()  # still queued: it never runs
+            early = None
+        if not early and silence >= C.EARLY_STT_SILENCE_S:
+            EARLY[id(self)] = (state.stream, EARLY_STT.submit(transcribe, (sampling_rate, state.stream)))
+        return silence >= C.PAUSE_SILENCE_S
+
     def process_audio(self, audio, state):
         super().process_audio(audio, state)
         # 2026-11-04 15:51:55: 1.2 s of echo or noise passed fastrtc's VAD (100 ms of speech is enough there), its
         # pause killed a four-tool answer mid-search, and the STT then found no speech in it at all: 34 s of silence.
         # The STT's own VAD decides now: what it would not transcribe is no turn and cuts nothing. ~10 ms a pause
-        if state.pause_detected and state.stream is not None and not stt_hears((state.sampling_rate, state.stream)):
+        if state.pause_detected and state.stream is not None and (not stt_hears((state.sampling_rate, state.stream))
+                                                                   or self.hears_itself(state)):
             state.pause_detected = state.started_talking = False
             state.stream = None
+            EARLY.pop(id(self), None)
             self.send_message_sync(create_message("log", "noise"))  # the page turns the secretary back up
+
+    playing = ()  # (start, end, text) of the secretary's phrases on the caller's speaker, as emit() hands them out
+
+    def emit(self):
+        out = super().emit()
+        if isinstance(out, tuple) and len(out) == 2 and isinstance(out[1], AdditionalOutputs) and isinstance(out[0], tuple):
+            card = out[1].args[0]
+            if isinstance(card, dict) and card.get("kind") == "bot":  # every spoken phrase carries its text
+                start = max(time.monotonic(), self.playing[-1][1] if self.playing else 0)
+                self.playing = (*self.playing[-5:], (start, start + out[0][1].shape[-1] / out[0][0], card["text"]))
+        return out
+
+    def clear_queue(self):
+        self.playing = ()  # what was queued will not play
+        super().clear_queue()
+
+    def hears_itself(self, state):
+        """No headphones (ลุงจืด 2026-11-04): the secretary's voice can leak from the speaker into the mic past the
+        browser's echo canceller (it misses a speaker picked with setSinkId), and the turn that made would cut the
+        answer off and answer the secretary's own words. A turn heard while it talked, mostly its words, is that."""
+        now, length = time.monotonic(), state.stream.size / state.sampling_rate
+        spoken = " ".join(t for s, e, t in self.playing if e + 0.5 > now - length and s < now)  # 0.5 s: network + jitter
+        if not spoken:
+            return False
+        early = EARLY.get(id(self))  # started 0.25 s ago: usually done
+        heard = early[1].result() if early else transcribe((state.sampling_rate, state.stream))
+        if echo := grounding.is_echo(heard, spoken):
+            log.info("echo of its own voice, not a turn: %s", masked(heard))
+        return echo
 
     def push_turn(self, interrupt):
         """Start a reply with no speech (gesture, typed chat, system note), like receive() does on a pause; `interrupt` also cuts the bot off."""
@@ -878,7 +944,8 @@ def make_stream(public=False):
         reply_public if public else reply_owner,
         startup_fn=greet_public if public else greet,  # the secretary speaks first when the call connects
         can_interrupt=True,  # barge-in: user speech clears queued bot audio
-        model_options=SileroVadOptions(min_speech_duration_ms=C.VAD_MIN_SPEECH_MS),
+        # exact speech ends (no padding, a 0.1 s gap ends a stretch): determine_pause measures the silence after it
+        model_options=SileroVadOptions(min_speech_duration_ms=C.VAD_MIN_SPEECH_MS, min_silence_duration_ms=100, speech_pad_ms=0),
         output_sample_rate=C.TTS_SAMPLE_RATE,
     )
     if not public:
@@ -920,7 +987,7 @@ def make_app(stream, public=False):
 
     @app.get("/team")  # who is on the team right now; the page turns the camera on only if "camera" is listed
     def team():
-        return {"boss": C.DEEPSEEK_MODEL if C.DEEPSEEK_API_KEY else LLM_MODEL, "workers": sorted(set(WORKER.get(n, "other") for n in tools))}
+        return {"boss": C.DEEPSEEK_MODEL, "workers": sorted(set(WORKER.get(n, "other") for n in tools))}
 
     @app.get("/outputs")  # subtitles, status, info cards, panel (Server-Sent Events)
     async def outputs(webrtc_id: str):
@@ -1002,13 +1069,13 @@ if __name__ == "__main__":
     os.makedirs(C.DOCS_DIR, exist_ok=True)
     os.makedirs(C.SESSIONS_DIR, exist_ok=True)
     stt = load_stt()
-    llm = ollama.Client(host=C.OLLAMA_HOST)
-    LLM_MODEL = pick_llm(llm)
+    if not C.DEEPSEEK_API_KEY:
+        raise SystemExit("DEEPSEEK_API_KEY is not set: put it in .env (the boss runs on DeepSeek)")
+    llm = ollama.Client(host=C.OLLAMA_HOST)  # the camera and the judge (VISION_MODEL)
     tts = load_tts()
     load_mcp_tools()
     load_workers()
-    log.info("STT=%s (%s) BOSS=%s LLM=%s VISION=%s TTS=%s", C.STT_MODEL, C.DEVICE, C.DEEPSEEK_MODEL if C.DEEPSEEK_API_KEY else "-",
-             LLM_MODEL, C.VISION_MODEL, C.TTS_MODEL)
+    log.info("STT=%s (%s) BOSS=%s VISION=%s TTS=%s", C.STT_MODEL, C.DEVICE, C.DEEPSEEK_MODEL, C.VISION_MODEL, C.TTS_MODEL)
     warm_up()
     if C.PUBLIC_SSH:
         threading.Thread(target=tunnel, daemon=True).start()

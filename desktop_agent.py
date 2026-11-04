@@ -126,22 +126,25 @@ PROMPT = (
 
 
 def desktop_task(task, chat, steps=6):
-    """Worker loop: `chat(messages, tools)` returns an Ollama message. Returns (cards, text) like every tool."""
+    """Worker loop: `chat(messages, tools)` returns (text, calls as {"id", "name", "args"}), OpenAI-style messages.
+    Returns (cards, text) like every tool."""
     messages = [{"role": "system", "content": PROMPT}, {"role": "user", "content": str(task)[:500]}]
     summary = ""
     for i in range(steps + 1):
-        msg = chat(messages, SPECS if i < steps and not state["pending"] else None)
-        if not msg.tool_calls:
-            summary = (msg.content or "").strip()
+        text, calls = chat(messages, SPECS if i < steps and not state["pending"] else None)
+        if not calls:
+            summary = text.strip()
             break
-        messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": msg.tool_calls})
-        for call in msg.tool_calls:
-            fn = TOOLS.get(call.function.name)
+        messages.append({"role": "assistant", "content": text, "tool_calls": [
+            {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["args"], ensure_ascii=False)}}
+            for c in calls]})
+        for c in calls:
+            fn = TOOLS.get(c["name"])
             try:
-                out = fn(**(call.function.arguments or {})) if fn else "ไม่มีเครื่องมือนี้"
+                out = fn(**c["args"]) if fn else "ไม่มีเครื่องมือนี้"
             except TypeError as e:  # wrong argument names from the LLM
                 out = f"อาร์กิวเมนต์ไม่ถูกต้อง ({e})"
-            messages.append({"role": "tool", "tool_name": call.function.name, "content": out})
+            messages.append({"role": "tool", "tool_call_id": c["id"], "content": out})
     if p := state["pending"]:
         summary += f"\n(รอ{C.USER_NAME}ยืนยันก่อน{p['label']})"
     summary = summary.strip() or "ลูกทีมคุมคอมพิวเตอร์ไม่ได้รายงานผล"
@@ -149,8 +152,6 @@ def desktop_task(task, chat, steps=6):
 
 
 if __name__ == "__main__":  # self-check with a fake exe and a scripted LLM: no real clicks
-    from types import SimpleNamespace as NS
-
     sent = []
     tree = {"children": [{"name": "Untitled - Notepad", "children": [
         {"ref_id": "@sX:e1", "role": "button", "name": "Help"}, {"ref_id": "@sX:e2", "role": "button", "name": "Save"},
@@ -164,12 +165,12 @@ if __name__ == "__main__":  # self-check with a fake exe and a scripted LLM: no 
     ad = fake_ad  # noqa: F811  (module-level rebinding, so every tool uses the fake)
 
     def call(name, **args):
-        return NS(function=NS(name=name, arguments=args))
+        return {"id": f"call_{name}", "name": name, "args": args}
     script = iter([[call("look", app="notepad.exe")], [call("click", ref="e1"), call("click", ref="@sX:e2")], []])
 
     def fake_chat(messages, tools):
         calls = next(script)
-        return NS(tool_calls=calls, content="" if calls else "เห็น Notepad กด Help แล้ว รอยืนยันกด Save")
+        return ("" if calls else "เห็น Notepad กด Help แล้ว รอยืนยันกด Save"), calls
     cards, text = desktop_task("เปิดดู notepad แล้วกดบันทึก", fake_chat)
     assert "e2 button \"Save\"" in look("notepad.exe") and "สวัสดี" in look("notepad.exe")
     assert ("click", "@sX:e1") in sent and ("click", "@sX:e2") not in sent, sent  # Help pressed, Save held

@@ -83,12 +83,38 @@ READINGS = dict(zip("ม.ค. ก.พ. มี.ค. เม.ย. พ.ค. มิ.�
     "มกราคม กุมภาพันธ์ มีนาคม เมษายน พฤษภาคม มิถุนายน กรกฎาคม สิงหาคม กันยายน ตุลาคม พฤศจิกายน ธันวาคม").split()))
 
 
+# how Thai speakers read Latin letters (ลุงจืด 2026-11-04 "ระบบพีโอเอส = ระบบ POS"): the boss must say a source's
+# POS as พีโอเอส, and Whisper writes a caller's POS that way too
+LETTERS = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "เอ บี ซี ดี อี เอฟ จี เอช ไอ เจ เค แอล เอ็ม เอ็น โอ พี คิว อาร์ เอส ที ยู วี "
+                   "ดับเบิลยู เอ็กซ์ วาย แซด".split()))
+LETTER = "|".join(sorted(LETTERS.values(), key=len, reverse=True))  # longest first: เอ็ม before เอ
+# two or more letter names in a row, none running on into a vowel or tone mark (ดีที่สุด is no "DT", เอา no "A")
+SPELLED = re.compile(rf"(?:(?:{LETTER})(?![ะ-ฺๅ็-๎])){{2,}}")
+
+
+def spelled(text):  # "ระบบ POS" -> ["พีโอเอส"]
+    return ["".join(LETTERS[c] for c in a) for a in re.findall(r"(?<![A-Za-z])[A-Z]{2,6}(?![A-Za-z])", text)]
+
+
+def acronyms(text):  # "ระบบพีโอเอส" -> ["POS"]; ceiling: a letter-like word glued on joins it (พีโอเอสดี -> POSD)
+    back = {v: k for k, v in LETTERS.items()}
+    return ["".join(back[t] for t in re.findall(LETTER, m)) for m in SPELLED.findall(text)]
+
+
+def is_echo(heard, spoken):
+    """Most words the mic heard are words the secretary was saying meanwhile: its own voice back from the speaker."""
+    # ponytail: a caller who repeats the bot's own words over it is taken as echo too; said again once it stops
+    words = [w for w in word_tokenize(heard, keep_whitespace=False) if re.search(r"\w", w)]
+    low = spoken.replace(" ", "")
+    return bool(words) and sum(w in low for w in words) >= 0.6 * len(words)
+
+
 def new_words(piece, sources):
     """Words of `piece` that `sources` never use (number words aside: numbers() checks those). Only a piece with some
     goes to the meaning judge; one made of source words passes as is."""
     # ponytail: source words put together into a new claim pass ("ยกเลิกผ่านระบบบัญชีที่ใช้อยู่"); judging every
     # phrase instead costs ~1 s each and the 8B judge says yes to almost all of them anyway
-    low = " ".join([sources, "พุทธศักราช คริสต์ศักราช", *(r for a, r in READINGS.items() if a in sources)]).lower()
+    low = " ".join([sources, "พุทธศักราช คริสต์ศักราช", *(r for a, r in READINGS.items() if a in sources), *spelled(sources)]).lower()
     seen = lambda w: len(w) > 1 and (w in STOP or is_number(w) or w.lower() in low)
     def known(w):  # a source word, or one glued to a stopword by the tokenizer: ใช้กับ = ใช้ + กับ
         return seen(w) or any((w.startswith(t) and seen(w[len(t):])) or (w.endswith(t) and seen(w[:-len(t)]))
@@ -139,4 +165,8 @@ if __name__ == "__main__":
     assert not unsourced("เบอร์ศูนย์แปดหนึ่ง หนึ่งสองสาม สี่ห้าหกเจ็ด นะครับ", phone)  # read back: no crash, sourced
     assert unsourced("เบอร์ศูนย์แปดหนึ่ง หนึ่งสองสาม สี่ห้าหกแปด", phone) == {"0811234568"}  # misheard digit
     assert unsourced("แล้วออกใบใหม่ภายในเจ็ดวันครับ", numbers("ยกเลิก 44 ด้วย flag 45")) == {"7#"}  # a made-up time limit
+    # Thai readings of Latin letters, both ways; ดีที่สุด / เอาไว้ / อีกที are words, not letters
+    assert acronyms("ระบบพีโอเอส") == ["POS"] and acronyms("เอาทีวีไปไอที") == ["TV", "IT"] and not acronyms("ดีที่สุด เอาไว้ อีกที")
+    assert not new_words("ระบบพีโอเอสครับ", "เมนูระบบ POS ขายหน้าร้าน")  # the judge cut such a source term before
+    assert is_echo("ผมเป็นเลขาของ ลุงจืด", "สวัสดีครับ ผมเป็นเลขาของลุงจืดครับ") and not is_echo("ราคาทองวันนี้เท่าไหร่", "สวัสดีครับ")
     print("grounding self-test OK")

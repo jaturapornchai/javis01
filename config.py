@@ -27,32 +27,24 @@ STT_LANGUAGE = "th"
 STT_BEAM_SIZE = 1
 STT_VAD_PARAMS = dict(min_silence_duration_ms=400)
 
-# --- LLM (Ollama) ---
+# --- LLMs: the boss on DeepSeek; the camera and the judge in Ollama ---
 # 127.0.0.1, not localhost: on Windows "localhost" tries ::1 first and every new connection waits ~2 s
 OLLAMA_HOST = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-# First one found in `ollama list` wins; override with env LLM_MODEL.
-# Typhoon 2.5 30B-A3B (Thai, SCB 10X): clearly better Thai answers than qwen3:8b / typhoon2.5 4B in our probe.
-LLM_CANDIDATES = ["scb10x/typhoon2.5-qwen3-30b-a3b", "qwen3:8b", "scb10x/typhoon2-8b-instruct", "qwen2.5:7b"]
-LLM_MODEL = os.environ.get("LLM_MODEL", "")
-# Layers of the brain kept on GPU (-1 = let Ollama decide). The MoE model has only 3B active params, so it still
-# runs ~25 tok/s mostly on CPU; a small value leaves VRAM for STT, TTS and the vision model. With -1 the brain
-# grabs all VRAM and Ollama evicts the vision model on every camera question (~25 s reload).
-LLM_NUM_GPU = int(os.environ.get("LLM_NUM_GPU", "8"))
-LLM_NUM_CTX = 8192
-# model default 0.6 gave a different, partly invented gold price answer on every run; low = stick to the sources
-LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3-vl:8b-instruct")  # answers look_at_camera
-# The boss (talks, picks the workers) runs on DeepSeek when DEEPSEEK_API_KEY is set (ลุงจืด 2026-11-04): Typhoon
-# 30B-A3B mostly on CPU took up to 17 s and lost the thread. If DeepSeek fails before it says anything, the turn
-# goes on with the local LLM above. STT, TTS, camera, the judge and the computer worker always stay local.
+# The boss (talks, picks the workers) and the computer worker run on DeepSeek only (ลุงจืด 2026-11-04). The local
+# Typhoon 30B-A3B fallback is gone: mostly on CPU it took up to 17 s and lost the thread, and it held GPU memory
+# beside STT, TTS and the vision model. DeepSeek down -> the caller hears an apology, never a guess.
+# STT, TTS, the camera and the judge always stay local.
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
-DEEPSEEK_TIMEOUT = 15  # seconds without a byte before the local LLM takes over
+DEEPSEEK_TIMEOUT = 15  # seconds without a byte before the turn gives up
+# low = stick to the sources: a model default of 0.6 gave a different, partly invented gold price on every run
+LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 HISTORY_TURNS = 10  # user+assistant pairs kept per caller session
 SESSIONS_DIR = os.path.join(BASE_DIR, "sessions")  # one <session id>.json per browser, so calls go on where they left off
 # ห้ามแต่งเรื่อง: checks every spoken phrase and screen line against this turn's sources (numbers: grounding.py).
-# The vision model is already on the GPU, so it runs beside the boss (mostly on CPU) without waiting for it.
+# The vision model is already on the GPU for the camera, so the judge loads nothing new.
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", VISION_MODEL)
 JUDGE_MAX_CHARS = int(os.environ.get("JUDGE_MAX_CHARS", "6000"))  # source tail it reads; its context is 4K tokens
 
@@ -140,10 +132,13 @@ TTS_CFG = 2.0  # guidance scale
 TTS_SPEED = 1.0
 TTS_SAMPLE_RATE = 24000
 
-# --- Turn-taking (FastRTC pause detection on 0.6 s windows) ---
+# --- Turn-taking (LiveKit-style endpointing on top of FastRTC's Silero VAD) ---
 # Silero drops speech bursts shorter than this. FastRTC's default 250 ms ends the turn at short
 # mid-sentence pauses (~0.3 s) in Thai speech; raise it if background noise keeps the turn open.
 VAD_MIN_SPEECH_MS = 100
+PAUSE_STEP_S = 0.1  # how often the end-of-turn check runs
+PAUSE_SILENCE_S = 0.5  # silence after the last word that ends the turn (LiveKit min_delay default); raise it if callers get cut mid-sentence
+EARLY_STT_SILENCE_S = 0.25  # silence that starts the transcription early (dropped if the caller goes on)
 
 # --- Server ---
 SERVER_PORT = int(os.environ.get("PORT", "7860"))

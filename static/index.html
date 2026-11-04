@@ -287,7 +287,7 @@ function teamRow(key) {
 }
 function initTeam() {
   team.boss = teamRow("boss");
-  fetch("/team").then((r) => r.json()).then(({ boss, workers }) => {
+  return fetch("/team").then((r) => r.json()).then(({ boss, workers }) => {
     team.boss.tk.textContent = boss; camOK = workers.includes("camera"); // the public line has no camera: never ask for it
     for (const w of workers) if (!team.rows[w]) teamRow(w);
     teamCount();
@@ -619,7 +619,7 @@ async function start() {
       try { const m = JSON.parse(e.data); if (m.type === "log") onLog(m.data); } catch { /* ignore non-JSON */ }
     };
     pc.ontrack = (e) => {
-      $("remote").srcObject = e.streams[0]; botMeter = analyser(e.streams[0]);
+      $("remote").srcObject = e.streams[0]; botMeter = analyser(e.streams[0]); playRemote();
     };
     pc.onconnectionstatechange = () => { if (pc && ["failed", "disconnected"].includes(pc.connectionState)) { notice("การเชื่อมต่อขาดหาย"); hangup(); } };
 
@@ -643,7 +643,8 @@ async function start() {
     setState("listening");
     ui.call.textContent = "วางสาย"; ui.call.className = "btn danger"; ui.call.disabled = false;
   } catch (e) {
-    notice(e.message?.startsWith("มี") || e.message?.startsWith("เชื่อม") ? e.message : `เริ่มคุยไม่ได้ (${e.name || "error"})`);
+    notice(e.message?.startsWith("มี") || e.message?.startsWith("เชื่อม") ? e.message
+      : e.name === "NotAllowedError" ? 'ยังไม่ได้อนุญาตให้ใช้ไมค์ กด "เริ่มคุย" แล้วกดอนุญาต' : `เริ่มคุยไม่ได้ (${e.name || "error"})`);
     hangup();
   }
 }
@@ -855,13 +856,24 @@ function runDemo() {
   }, 40));
 }
 
+// ลุงจืด 2026-11-04 "เปิดเข้ามาให้เริ่มคุยเลย": the call starts with the page. Chrome plays sound (and runs an
+// AudioContext) only once the site had a tap (developer.chrome.com/blog/autoplay), so a blocked voice waits for the
+// first tap anywhere; that tap only turns the sound on, it does not also press the button under it
+function playRemote() {
+  $("remote").play().catch(() => {
+    notice("แตะตรงไหนก็ได้เพื่อเปิดเสียง");
+    addEventListener("click", (e) => { e.stopPropagation(); $("remote").play().catch(() => {}); actx?.resume(); notice(""); }, { once: true, capture: true });
+  });
+}
+
 ui.call.onclick = () => {
   if (pc || ui.call.textContent === "วางสาย") hangup();
   else (demo ? runDemo() : start());
 };
-initTeam();
+const teamReady = initTeam();
 initGesture();
 if (demo) runDemo();
+else teamReady.finally(start); // after /team: it says whether to ask for the camera
 </script>
 </body>
 </html>

@@ -59,7 +59,6 @@ assert all(f'"{g}"' in ui or g.startswith("fingers_") for g in va.GESTURES), "ge
 # --- models + server ---------------------------------------------------------------------------------------------
 va.stt = va.load_stt()
 va.llm = ollama.Client(host=C.OLLAMA_HOST)
-va.LLM_MODEL = va.pick_llm(va.llm)
 va.tts = va.load_tts()
 va.load_mcp_tools()
 va.load_workers()
@@ -79,10 +78,54 @@ speech = (librosa.load(C.REF_AUDIO_PATH, sr=48000)[0][: 2 * 48000] * 32767).asty
 hiss = np.random.default_rng(0).normal(0, 800, 57600).astype(np.int16)
 assert va.stt_hears((48000, speech)) and not va.stt_hears((48000, hiss)) and not va.stt_hears((48000, hiss * 0))
 va.warm_up()
-if C.DEEPSEEK_API_KEY:  # DeepSeek down (here: a bad key) -> the local boss answers the same turn
-    key, C.DEEPSEEK_API_KEY = C.DEEPSEEK_API_KEY, "sk-invalid"
-    assert "".join(va.llm_tokens([{"role": "user", "content": "พูดคำว่า สวัสดี"}], [], None)).strip(), "no local fallback"
-    C.DEEPSEEK_API_KEY = key
+# endpointing: the turn ends PAUSE_SILENCE_S (+ one check step) after the last word, its words transcribed already
+h, early = va.make_stream().event_handler, set()  # early: sizes of the audio each early transcription started on
+
+
+def until_pause(*parts):
+    h.state = h.state.new()
+    early.clear()
+    said = np.concatenate([hiss * 0, *parts, np.zeros(48000, np.int16)])  # 1.2 s silence first, 1 s at the end
+    for n in range(0, said.size, 960):  # 20 ms frames, as WebRTC sends them
+        h.process_audio((48000, said[n : n + 960]), h.state)
+        early.update([va.EARLY[id(h)][0].size] if id(h) in va.EARLY else [])
+        if h.state.pause_detected:
+            return (n + 960 - said.size) / 48000 + 1  # seconds after the last word
+    raise AssertionError("no pause")
+
+
+pause_after = until_pause(speech)
+print(f"endpointing: pause {pause_after:.2f}s after the speech, turn audio {h.state.stream.size / 48000:.1f}s")
+assert pause_after <= C.PAUSE_SILENCE_S + 0.2, pause_after
+assert h.state.stream.size <= 4.2 * 48000, "the turn starts at most a second before the first word"
+assert id(h) in va.EARLY, "no early transcription started before the turn ended"
+# the reply is busy and nobody takes the turn yet: quiet must not re-run the STT (it did every 0.9 s on the whole,
+# growing turn: 36 s of audio once a second, 20 s before a caller's words came out)
+head = va.EARLY[id(h)][0].size
+for _ in range(150):  # 3 s
+    h.process_audio((48000, np.zeros(960, np.int16)), h.state)
+assert va.EARLY[id(h)][0].size == head, "quiet after the turn re-ran the STT"
+assert va.early_words(h.state.stream) == va.transcribe((48000, h.state.stream)) != "" and not va.EARLY
+until_pause(speech, np.zeros(int(0.3 * 48000), np.int16), speech)  # a pause mid-turn starts one, then more words
+assert len(early) == 2, (early, h.state.stream.size / 48000)
+assert va.early_words(h.state.stream) == va.transcribe((48000, h.state.stream)), "early words missed the speech after them"
+# no headphones: the secretary's own voice back through the mic while it plays is no turn; other words still are
+h.playing = ((time.monotonic() - 9, time.monotonic() + 60, va.transcribe((48000, speech))),)
+try:
+    until_pause(speech)
+    raise SystemExit("its own voice made a turn")
+except AssertionError:
+    pass
+h.playing = ((time.monotonic() - 9, time.monotonic() + 60, "ราคาทองวันนี้เท่าไหร่ครับ"),)
+until_pause(speech)
+h.playing = ()
+assert all(va.speak("ครับ").size for _ in range(20)), "a short word came out as 0 samples"  # it did 3 of 20 times
+# the camera filler said ภาพ first, so the answer may say it too (the judge cut a true camera answer over it)
+assert not va.grounding.new_words("จากภาพตอนนี้เห็นเป็นสีขาวกับวงกลมสีแดงครับ", "ตอนนี้ในกล้องเห็นอะไรบ้างครับ\nสีขาว วงกลมสีแดง\n" + va.OWN_WORDS)
+# DeepSeek down (here: a bad key) -> the caller hears the apology, nothing made up
+key, C.DEEPSEEK_API_KEY = C.DEEPSEEK_API_KEY, "sk-invalid"
+assert "".join(va.llm_tokens([{"role": "user", "content": "พูดคำว่า สวัสดี"}], [], None)) == va.BRAIN_DOWN
+C.DEEPSEEK_API_KEY = key
 threading.Thread(target=uvicorn.run, args=(va.make_app(va.make_stream()),),
                  kwargs=dict(host="127.0.0.1", port=7861, log_level="warning"), daemon=True).start()
 time.sleep(2)
