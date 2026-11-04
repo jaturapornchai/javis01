@@ -199,10 +199,10 @@ def calendar_events(days=1, query=""):
     return _out(cards, items, "ไม่พบนัดหมายในช่วงเวลานี้")
 
 
-def upcoming_events(minutes):
+def upcoming_events(minutes, now=None):
     """Events starting within the next N minutes (for spoken reminders). Not an LLM tool."""
     try:
-        now = datetime.now(timezone.utc)
+        now = now or datetime.now(timezone.utc)  # the self-test passes a fixed time
         out = []
         for ev in _events(now, now + timedelta(minutes=int(minutes)), n=20):
             start = ev.get("start", {}).get("dateTime")
@@ -351,7 +351,7 @@ if __name__ == "__main__":
     assert len(cards) == 2 and "พุธ 4 พ.ย. 14:00-15:00" in text and "ทั้งวัน" in text and '"attendees":2' in text, text
     assert cards[0]["url"] == "https://cal/e1"
     assert calendar_events(0)[0] == [] and calendar_events(1, "none") == ([], "ไม่พบนัดหมายในช่วงเวลานี้")
-    ue = upcoming_events(30)
+    ue = upcoming_events(30, now=datetime(2026, 11, 4, 6, 45, tzinfo=timezone.utc))  # 13:45 +07: e1 starts at 14:00
     assert len(ue) == 1 and ue[0]["id"] == "e1" and ue[0]["start"].tzinfo, ue  # all-day e2 skipped
 
     cards, text = drive_search("แผน")
