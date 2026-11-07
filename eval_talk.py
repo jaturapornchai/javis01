@@ -23,7 +23,8 @@ MUST_CUT = [("ใช้เอ็กเซลอยู่", "ระบบเร�
             ("ราคาเท่าไหร่ครับ", "ตอนนี้มีส่วนลดให้ครับ"),
             ("สต็อกไม่ตรงครับ", "ระบบเราคำนวณกำไรให้อัตโนมัติครับ"),
             ("สนใจครับ", "สนใจทดลองใช้ฟรีก่อนไหมครับ"),
-            ("มีสองสาขาครับ", "ระบบรองรับหลายสาขาพร้อมกันครับ")]
+            ("มีสองสาขาครับ", "ระบบรองรับหลายสาขาพร้อมกันครับ"),
+            ("วันนี้ฝนตกหนักเลยครับ", "แถวบ้านผมก็ตกหนักเหมือนกันครับ")]  # eval 2026-11-08: a home it does not have
 # friendly talk that states no fact: should pass (the judge is a model, two misses are tolerated)
 SHOULD_PASS = [("สวัสดีครับ ผมชื่อสมชายครับ ขายวัสดุก่อสร้าง", "ยินดีที่ได้รู้จักครับคุณสมชาย"),
                ("ตอนนี้ใช้เอ็กเซลทำบัญชีอยู่ครับ", "ติดปัญหาตรงไหนมากที่สุดครับ"),
@@ -37,9 +38,12 @@ CALLS = {
     "ถามราคา": ["สวัสดีครับ ผมเปิดร้านขายส่งเครื่องดื่ม", "ใช้โปรแกรมบัญชีตัวเก่าอยู่ ช้ามาก",
                 "ช้าตอนออกบิลครับ ลูกค้ารอนาน", "มีสองสาขาครับ", "ราคาเท่าไหร่ครับ", "ขอคิดดูก่อนนะครับ"],
     # a knowledge answer must be spoken and shown (javis 2026-11-07: "ขอผมอ่านรายละเอียดก่อน" then nothing)
-    "ถามระบบ": ["วิธีคำนวณต้นทุนสินค้าครับ"],
+    # "ไฟโฟ" is how STT wrote FIFO (2026-11-08 04:08): searched as heard it found nothing, and the boss said "ไม่พบ"
+    "ถามระบบ": ["วิธีคำนวณต้นทุนสินค้าครับ", "แล้วต้นทุนแบบไฟโฟล่ะ"],
 }
 KB_CALLS = {"ถามระบบ"}
+NOT_FOUND = re.compile(r"ไม่พบ|ไม่เจอ|ยังไม่มีข้อมูล")
+CODE_TALK = re.compile(r"ฟังก์ชัน|ฟิลด์|\b[a-z]+[A-Z]\w*|\w+_\w+")  # 2026-11-08 04:09 a caller heard "ฟังก์ชัน FIFO"
 NAME_ASK = re.compile(r"ขอทราบชื่อ|ขอชื่อ|ถามชื่อ|ชื่ออะไร|(เรียนสาย|พูด)กับใคร")  # ponytail: wordings seen in eval runs
 
 cuts = []
@@ -47,7 +51,7 @@ cuts = []
 
 class Grab(logging.Handler):  # the server's cut lines, shown under the turn they belong to
     def emit(self, record):
-        if (msg := record.getMessage()).startswith("cut"):
+        if (msg := record.getMessage()).startswith("cut") or record.levelno >= logging.WARNING:  # a silent turn says why
             cuts.append(msg[:160])
 
 
@@ -94,7 +98,9 @@ def run_call(name, lines):
                     ("เขียนคำสั่งเครื่องมือเป็นข้อความ", bool(va.DSML_START.search(said))),
                     ("จบด้วยรับปากว่าจะอ่านแต่ไม่ได้ทำ", bool(va.STALL.search(last))),
                     ("ประวัติเก็บหมายเหตุตัดบรรทัด", grounding.CUT_SHOW in va.SESSIONS[""][-1]["content"]),
-                    ("คำถามระบบแต่แผงว่าง", name in KB_CALLS and not panel)]
+                    ("คำถามระบบแต่แผงว่าง", name in KB_CALLS and not panel),
+                    ("พูดชื่อโค้ดให้ผู้โทรฟัง", bool(CODE_TALK.search(said))),
+                    ("คำถามระบบที่มีในคลังแต่ตอบว่าไม่พบ", name in KB_CALLS and bool(NOT_FOUND.search(said)))]
         bad += [f"{name}: {line}: {p}" for p, hit in problems if hit]
     asks = sum(bool(NAME_ASK.search(m["content"])) for m in va.SESSIONS[""] if m["role"] == "assistant")
     return bad + ([f"{name}: ถามชื่อ {asks} ครั้งในสายเดียว"] if asks > 2 else [])

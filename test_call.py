@@ -38,6 +38,12 @@ assert "".join(chunks) == "สวัสดีครับ วันนี้อ�
 assert not any(c.endswith("1,250.") for c in chunks), chunks
 phone = list(va.chunk_sentences(iter(["รับทราบครับ ร้านสมหญิงวัสดุ ", "เบอร์ศูนย์แปด", "หนึ่ง ", "หนึ่งสองสาม ส", "ี่ห้าหกเจ็ด ", "นะครับ"])))
 assert any("ศูนย์แปดหนึ่ง หนึ่งสองสาม สี่ห้าหกเจ็ด" in c for c in phone), phone  # a number read in groups stays whole
+talk = list(va.chunk_sentences(iter(["เรื่องนี้ต้องบอกตรงๆ ", "ครับว่าเลือกประเภทต้นทุนเป็น ", "LOT FIFO ได้ ", "แต่คิดจริงใช้ถัวเฉลี่ยครับ ", "ถามต่อได้ครับ"])))
+assert talk[0].endswith("ถัวเฉลี่ยครับ "), talk  # one spoken sentence = one chunk, not cut at any space (2026-11-08 call)
+real_judge, va.judge, turn = va.judge, (lambda sources, piece, before: False), {}  # a judge that cuts every claim
+list(va.panel_events(iter(["สรุป\n| ขั้น | ทำอะไร |\n|---|---|\n| 1 | ไล่บรรทัด |\n"]), [], set(), "", turn))
+va.judge = real_judge
+assert turn["kept"][:2] == ["| ขั้น | ทำอะไร |", "|---|---|"], turn  # a table keeps its column names (2026-11-08 04:59)
 assert va.LONG_NUMBER.sub("", "ร้านสมหญิงวัสดุ เบอร์ 081-123-4567 ค่ะ ปี 2567") == "ร้านสมหญิงวัสดุ เบอร์  ค่ะ ปี 2567"  # no phone to the BC brain
 assert va.LONG_NUMBER.sub("", "เบอร์ ศูนย์ แปด หนึ่ง หนึ่ง สอง สาม สี่ ห้า หก เจ็ด ค่ะ ภาษีสองแบบ") == "เบอร์ ค่ะ ภาษีสองแบบ"
 assert va.clean("**สวัสดี** # ครับ\n- ข้อหนึ่ง") == "สวัสดี ครับ ข้อหนึ่ง"

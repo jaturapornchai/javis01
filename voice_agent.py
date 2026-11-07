@@ -57,6 +57,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Thai separates phrases with spaces, not punctuation; "." is not a boundary so "1,250.50" stays whole.
 BOUNDARY = re.compile(r"\s")
+SENTENCE_END = re.compile(r"(?:ครับ|ค่ะ|คะ|[!?])\s")  # where a spoken sentence ends: one chunk = one tune
 JUNK = re.compile(r"<think>.*?</think>|[*#_`~>|\[\]{}]|^\s*[-•]\s*", re.S | re.M)
 # ponytail: keyword route. The brain sometimes describes the camera without looking (it once invented a wooden
 # table for a red circle), so these words force a look_at_camera first. Upgrade: a small classifier model.
@@ -156,12 +157,16 @@ def inside_number(before, after):
     return bool(NUM_END.search(before)) and any(w.startswith(rest[: len(w)]) for w in NUM_WORDS)
 
 
-def chunk_sentences(tokens, min_chars=20):
-    """Group streamed tokens into speakable chunks, cut at the last space/punctuation that is not inside a number."""
+def chunk_sentences(tokens, min_chars=20, max_chars=80):
+    """Group streamed tokens into speakable chunks: cut at the last sentence end (ครับ, ค่ะ) once min_chars are in,
+    or at the last space once max_chars are, never inside a number."""
+    # ลุงจืด 2026-11-08 "คุยเป็นธรรมชาติ มนุษย์ มากที่สุด": a cut at any space after 20 characters spoke
+    # "เรื่องนี้ต้องบอกตรงๆ / ครับว่าเลือกประเภทต้นทุนเป็น / LOT FIFO ได้", each piece with its own falling tune
     buf = ""
+    whole = lambda ms: [x for x in ms if not inside_number(buf[: x.end()], buf[x.end() :])]
     for tok in tokens:
         buf += tok
-        if len(buf) >= min_chars and (m := [x for x in BOUNDARY.finditer(buf) if not inside_number(buf[:x.end()], buf[x.end():])]):
+        if len(buf) >= min_chars and (m := whole(SENTENCE_END.finditer(buf)) or (len(buf) >= max_chars and whole(BOUNDARY.finditer(buf)))):
             cut = m[-1].end()
             if buf[:cut].strip():
                 yield buf[:cut]
@@ -574,7 +579,10 @@ def panel_events(tokens, screen, known, sources, turn):
         if len(lines) <= turn.get("lines", 0):
             continue
         for ln in lines[turn.get("lines", 0):]:
-            if not re.search(r"\w", ln) or (not (bad := grounding.unsourced(ln, known)) and judge(sources, ln, "\n".join(kept))):
+            # a table's first row is its column names, no claim: the judge cut "| ขั้น | สิ่งที่ระบบทำ | สูตร/เงื่อนไข |"
+            # (2026-11-08 04:59) and the page, with no head row, ran the whole table into one paragraph
+            head = ln.lstrip().startswith("|") and not (kept and kept[-1].lstrip().startswith("|"))
+            if not re.search(r"\w", ln) or (not (bad := grounding.unsourced(ln, known)) and (head or judge(sources, ln, "\n".join(kept)))):
                 m = MAP_LINE.match(ln)  # the page draws a map where the line carries "@lat,lon"
                 kept.append(f"{ln} @{geo}" if m and (geo := geocode(m[1])) else ln)  # blank and |---| lines need no check
             else:  # logged like a spoken cut: javis 2026-11-07 showed a panel of only CUT_SHOW, with no trace why
@@ -625,12 +633,14 @@ JUDGE_ASK = (
     "not say, even inside a question, and any guess or advice it states (not asks) about the user, their shop or "
     "their customers (น่าจะชอบ, ต้องระวัง): a feature, service, price, free thing, discount, trial, visit, "
     "promise, place, day, weather, person, team, event, step or condition (ส่งฟรี, ไปติดตั้งให้, ทดลองใช้ฟรี, "
-    "รองรับหลายสาขา, วันเสาร์, ต้องเซ็นชื่อ). source_word is \"\" unless same_as_source. Answer JSON."
+    "รองรับหลายสาขา, วันเสาร์, ต้องเซ็นชื่อ). "
+    # eval 2026-11-08: "แถวบ้านผมก็ตกหนักเหมือนกันครับ" passed as talk; the assistant has no home or life
+    "A life of its own is new_info too: its home, family, the weather where it is, what it did or felt "
+    "(แถวบ้านผม, ที่บ้านผม, ผมก็เคย). source_word is \"\" unless same_as_source. Answer JSON."
 )
-# said once at the end of an answer that had phrases cut (ลุงจืด 2026-11-04): a cut phrase said in place
-# broke the answer up ("ส่วนนี้ผมไม่เจอ... หรือครับ ให้ช่วยอะไรครับ")
-CUT_END = "ส่วนที่เหลือผมไม่เจอในแหล่งข้อมูล ขอไม่เดานะครับ"
-CUT_ALL = "เรื่องนี้ผมไม่เจอในแหล่งข้อมูลครับ ขอไม่เดานะครับ"
+# said only when every phrase of an answer was cut. ลุงจืด 2026-11-08 "ผมไม่เจอในแหล่งข้อมูล ขอไม่เดานะครับ อันนี้พูดบ่อยไป":
+# an answer with some phrases kept now just ends on them (the panel still notes the cut), and this asks for more words
+CUT_ALL = "เรื่องนี้ผมยังหาข้อมูลที่แน่ใจไม่เจอครับ ช่วยเล่าเพิ่มอีกนิดได้ไหมครับ"
 # DeepSeek at times ends a round on a promise ("ขอผมอ่านรายละเอียดก่อนนะครับ") with no tool call, and the turn went
 # quiet (javis 2026-11-07: 5 turns of one call, the first with no history). ponytail: a phrase list; a new wording
 # slips past until it is added here
@@ -664,6 +674,29 @@ def worker_chat(messages, tools):
     """A worker's own brain call, on DeepSeek like the boss: (text, calls)."""
     calls = []
     return "".join(deepseek_tokens(messages, calls, tools)), calls
+
+
+# ลุงจืด 2026-11-08 "ต้องจัดคำถามให้เหมาะก่อนค้นหา เพราะบางครั้งก็สะกดผิด หรือคนถามสับสน": the caller's raw words found
+# little (STT wrote FIFO as "ไฟโฟ"; "การคำนวณต้นทุนล่ะ" glued to the question before it found depreciation notes)
+# first wording (2026-11-08 check) dragged the last topic into a new question and added terms not asked (FIFO to a lot question)
+SEARCH_ASK = ("เขียนคำค้นคลังความรู้โปรแกรมบัญชี BC สำหรับคำพูดล่าสุดของผู้โทร ตอบคำค้นบรรทัดเดียว 2-6 คำ ไม่ต้องอธิบาย "
+              "แก้คำที่ระบบฟังเสียงเขียนผิดหรือสะกดผิด (ไฟโฟ -> FIFO, พีโอเอส -> POS) คำที่คนไทยพูดทับศัพท์ให้ใส่ทั้งคำไทยและคำอังกฤษ "
+              "ถ้าผู้โทรถามเรื่องใหม่ ใช้เรื่องใหม่อย่างเดียว ห้ามเอาเรื่องก่อนมาปน เติมเรื่องจากบทสนทนาเฉพาะเมื่อคำพูดล่าสุดไม่บอกว่าถามเรื่องอะไร "
+              "(เช่น \"แล้วยกเลิกล่ะ\") ห้ามใส่คำที่ผู้โทรไม่ได้พูดถึง")
+
+
+def search_words(history, heard):
+    """The caller's words made into a search: misheard words fixed, Thai and English terms, a follow-up made whole.
+    ponytail: one more DeepSeek call before the first word; "" on failure, and the raw words are searched"""
+    talk = [f"{'ผู้โทร' if m['role'] == 'user' else 'เลขา'}: {m['content'].partition(C.SCREEN_MARK)[0].strip()[:150]}"
+            for m in history[-4:] if m["content"] and not m["content"].startswith(("(", C.SILENT_MARK))]
+    try:
+        text, _ = worker_chat([{"role": "system", "content": SEARCH_ASK},
+                               {"role": "user", "content": "\n".join([*talk, f"ผู้โทร (ล่าสุด): {heard}"])}], None)
+    except (httpx.HTTPError, ValueError, KeyError) as e:
+        log.warning("search words failed (%s)", type(e).__name__)
+        return ""
+    return " ".join(text.split())[:200]
 
 
 def load_workers():
@@ -784,9 +817,11 @@ def reply(audio, public=False):
         # ponytail: docs/ chunks ride along on every question; trim or gate them if a big docs/ slows the first word
         # a short follow-up searched alone found nothing ("เว็บ" after a question about the website): add the
         # caller's previous words. Ceiling: a 20-character cut; the boss can still search again itself
-        last = next((m["content"].splitlines()[0] for m in reversed(history) if m["role"] == "user" and m["content"]), "")
-        query = f"{last} {heard}" if len(heard) < 20 and last and not last.startswith("(") else heard
-        query = " ".join([query, *grounding.acronyms(query)])  # Whisper writes "ระบบ POS" as ระบบพีโอเอส; notes say POS
+        # first the boss's own reading of the words (search_words); the old glue-and-spell rules only if that fails
+        if not (query := search_words(history, heard)):
+            last = next((m["content"].splitlines()[0] for m in reversed(history) if m["role"] == "user" and m["content"]), "")
+            query = f"{last} {heard}" if len(heard) < 20 and last and not last.startswith("(") else heard
+            query = " ".join([query, *grounding.acronyms(query)])  # Whisper writes "ระบบ POS" as ระบบพีโอเอส; notes say POS
         calls = [(n, {"query": LONG_NUMBER.sub("", query) if n == "search_brain" else query}) for n in ("search_brain", "search_docs") if n in tools]
         texts = yield from dispatch(calls, said, {"filled": True}, tools)
         # snippets are only summaries and the boss never calls read_note itself: "ยกเลิกยังไง" got a made-up
@@ -799,12 +834,14 @@ def reply(audio, public=False):
         if "read_note" in tools and slugs:
             notes = yield from dispatch([("read_note", {"slug": s}) for s in slugs], said, {"filled": True}, tools)
             for k, note in enumerate(notes):
-                if part := grounding.note_sections(note, heard):
+                if part := grounding.note_sections(note, f"{heard} {query}"):  # query: FIFO for a heard "ไฟโฟ"
                     calls.append(("read_note", {}))
                     texts.append(part if k == 0 else part[:1500])
         found = " ".join(f"[{n}] {t}" for (n, _), t in zip(calls, texts))
         now += (f"\n(ระบบ: ลูกทีมค้นให้แล้ว {found} ใช้เฉพาะส่วนที่ตรงกับคำถามจริงๆ "
-                "ถ้าไม่มีส่วนไหนตรง ให้เรียก web_search หรือบอกว่าไม่พบแล้วถามกลับ ห้ามตอบจากความจำ)")
+                # 2026-11-08 04:08 call: "ไม่พบเรื่อง…ในคลังความรู้บีซีครับ หมายถึงอะไรครับ" 4 times, never a second search
+                "ถ้าไม่มีส่วนไหนตรง ให้ค้นเองอีกครั้งด้วยคำอื่นก่อน (search_brain คำไทยหรือคำอังกฤษ หรือ web_search) "
+                "ถ้ายังไม่เจอจึงบอกสั้นๆ ว่ายังไม่มีข้อมูลเรื่องนี้ แล้วถามว่าหมายถึงเรื่องไหน ห้ามตอบจากความจำ)")
     messages = [{"role": "system", "content": prompt}, *history, {"role": "user", "content": now.strip()}]
     known = grounding.numbers(" ".join(m["content"] for m in messages[1:]))  # every number a source gave this turn
     try:
@@ -855,8 +892,9 @@ def reply(audio, public=False):
             texts = yield from dispatch([(c["name"], c["args"]) for c in calls], said, turn, tools)
             messages += [{"role": "tool", "tool_call_id": c["id"], "content": text} for c, text in zip(calls, texts)]
             known |= grounding.numbers(" ".join(texts))
-        if turn.get("cut") and heard:  # a greeting or reminder just drops the phrase: "not found" fits no hello
-            text = CUT_END if said else CUT_ALL
+        if turn.get("cut") and heard and not said:  # a greeting or reminder just drops the phrase: "not found" fits no hello
+            text = CUT_ALL
+            log.info("BOT  (all cut): %s", text)  # logged, so watch_calls.py sees how often it is said
             said.append(text)
             yield (C.TTS_SAMPLE_RATE, speak(text)), AdditionalOutputs({"kind": "bot", "text": text})
     finally:  # also runs after barge-in; history may hold a chunk that was queued but cut before playback
