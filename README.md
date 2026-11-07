@@ -164,6 +164,31 @@ npm install
 .venv/Scripts/python.exe voice_agent.py
 ```
 
+### เปิดเองอัตโนมัติหลังเปิดเครื่อง
+
+Task Scheduler ชื่อ `javis voice agent` จะรัน `start_hidden.vbs` ตอน logon (หน่วง 30 วินาที) ซึ่งเปิด `voice_agent.py` แบบไม่มีหน้าต่าง และเขียน log ต่อท้ายไฟล์ `voice_agent.log`
+- ถ้าโปรแกรมหยุด (เช่น ตอน logon Ollama หรือเน็ตยังไม่พร้อม) จะเปิดใหม่หลัง 30 วินาที ได้สูงสุด 5 รอบต่อการ logon หนึ่งครั้ง
+- task ไม่มีเวลาจำกัด (ค่าเริ่มต้นของ Windows จะหยุด task เองเมื่อครบ 3 วัน)
+- ตั้งใหม่ด้วย PowerShell:
+
+```powershell
+$a = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '"D:\bctest01\start_hidden.vbs"' -WorkingDirectory 'D:\bctest01'
+$t = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; $t.Delay = 'PT30S'
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+$p = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName 'javis voice agent' -Action $a -Trigger $t -Settings $s -Principal $p -Force
+```
+
+- ปิด (ต้องปิดก่อนรัน `test_call.py` หรือรันผ่านแอป Claude ไม่งั้นพอร์ตชนกัน) `Stop-ScheduledTask` ปิดแค่ตัววนเปิดใหม่ ต้องปิด python ตามด้วย:
+
+```powershell
+Stop-ScheduledTask -TaskName 'javis voice agent'
+Get-CimInstance Win32_Process -Filter "Name='python.exe' AND CommandLine LIKE '%voice_agent.py%'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+- เปิดใหม่โดยไม่ต้อง logon: `Start-ScheduledTask -TaskName 'javis voice agent'`
+- เลิกเปิดอัตโนมัติ: `Unregister-ScheduledTask -TaskName 'javis voice agent' -Confirm:$false`
+
 เปิด http://127.0.0.1:7860 แล้วอนุญาตไมค์และกล้อง สายเริ่มเองทันทีไม่ต้องกดปุ่ม Chrome ไม่ให้เว็บเปิดเสียงก่อนผู้ใช้แตะหน้าเว็บ ([กติกา autoplay](https://developer.chrome.com/blog/autoplay)) ถ้าขึ้นว่า "แตะตรงไหนก็ได้เพื่อเปิดเสียง" ให้แตะหน้าเว็บหนึ่งครั้ง
 - **ตัวอย่างการใช้งาน**:
   - "ช่วยดูในเอกสารหน่อย ร้านเปิดกี่โมง" ระบบค้น `docs/`
@@ -321,6 +346,8 @@ npm install
   - ชื่อร้านและเบอร์ที่ลูกค้าให้ไว้อยู่ใน `sessions/pub-*.json` เท่านั้น ยังไม่มีรายการหรือการแจ้งเตือนให้ลุงจืด
   - log ของเซิร์ฟเวอร์ปิดเลขยาว (เบอร์ เลขผู้เสียภาษี) เป็น `###` แต่ชื่อคนและชื่อร้านยังอยู่ใน log
   - tunnel อยู่ในโปรแกรม ถ้าปิด `voice_agent.py` หรือปิดเครื่อง เว็บจะขึ้น 502
+    - หลังรีบูต โปรแกรมเริ่มเมื่อลุงจืด logon เข้า Windows แล้ว ระหว่างที่ยังไม่ logon เว็บจะขึ้น 502 (task เป็นแบบ Interactive เพราะลูกทีมคุมคอมพิวเตอร์ต้องเห็นหน้าจอ)
+    - ถ้าโปรแกรมหยุดครบ 5 รอบใน logon เดียว จะไม่เปิดเองอีกจนกว่าจะ logon ใหม่หรือสั่ง `Start-ScheduledTask` ดูสาเหตุได้ใน `voice_agent.log`
   - เสียง OmniVoice ใช้สัญญาอนุญาต CC-BY-NC (ห้ามใช้เชิงพาณิชย์) ลุงจืดเลือกใช้ไปก่อน
 - **ข้อมูลที่ส่งออกนอกเครื่อง**:
   - DeepSeek: คำพูดของผู้โทร ประวัติใน session ผลค้น คำตอบของลูกทีม (รวมคำตอบจากกล้อง) และข้อความบนจอคอมพิวเตอร์ที่ลูกทีมคุมคอมพิวเตอร์อ่าน ถูกส่งไปที่ DeepSeek
