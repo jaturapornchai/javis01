@@ -23,6 +23,7 @@ button,summary{font:inherit;color:inherit}
 .btn:disabled{opacity:.45;cursor:default}
 .btn.primary{background:#0e7490;border-color:#22d3ee}
 .btn.danger{background:#9f1239;border-color:#fb7185}
+.btn[aria-pressed="true"]{background:#92400e;border-color:#fbbf24}
 
 /* device picker: native <details> dropdown under its 40px summary button */
 #dev{position:relative}
@@ -169,6 +170,7 @@ body.panel #user{font-size:15px}
         <div class="row"><select id="spkSel"></select><button id="spkTest" class="btn" type="button">ทดสอบเสียง</button></div></div>
     </div>
   </details>
+  <button id="micBtn" class="btn" type="button" disabled aria-label="เปิดหรือปิดไมค์" aria-pressed="false">ปิดไมค์</button>
   <button id="camBtn" class="btn" type="button" disabled aria-label="เปิดหรือปิดกล้อง">ปิดกล้อง</button>
   <button id="callBtn" class="btn primary" type="button">เริ่มคุย</button>
 </header>
@@ -224,7 +226,7 @@ const SRC = { web: ["เว็บ", 0x60a5fa], docs: ["เอกสารใน�
 const OTHER_COLOR = 0x9ca3af; // any source string not in SRC
 
 let state = "idle", statusText = "", userLevel = 0, botLevel = 0, panelText = "", panelBlocks = 0;
-const ui = { call: $("callBtn"), cam: $("camBtn"), pill: $("pill"), user: $("user"), bot: $("bot"), cards: $("cards"), list: $("trlist"), note: $("note") };
+const ui = { call: $("callBtn"), mic: $("micBtn"), cam: $("camBtn"), pill: $("pill"), user: $("user"), bot: $("bot"), cards: $("cards"), list: $("trlist"), note: $("note") };
 
 /* ---------- UI state ---------- */
 function render() { ui.pill.textContent = statusText || LABEL[state]; }
@@ -482,7 +484,14 @@ let userMeter = null, botMeter = null;
 setInterval(() => { if (userMeter) userLevel = userMeter(); if (botMeter) botLevel = botMeter(); }, 40);
 
 /* ---------- call ---------- */
-let pc = null, es = null, stream = null, frameTimer = null, inflight = false, camOn = false, webrtcId = "", demoTimers = [];
+let pc = null, es = null, stream = null, frameTimer = null, inflight = false, camOn = false, micOn = true, webrtcId = "", demoTimers = [];
+
+// ลุงจืด 2026-11-07 "เพิ่มปุ่ม ปิด/เปิด mic": an off mic sends silence, so the call stays up and the secretary hears no turn
+function setMic(on) {
+  micOn = on; ui.mic.textContent = on ? "ปิดไมค์" : "เปิดไมค์"; ui.mic.setAttribute("aria-pressed", String(!on));
+  stream?.getAudioTracks().forEach((t) => (t.enabled = on));
+}
+ui.mic.onclick = () => setMic(!micOn);
 
 function showCam(on) {
   camOn = on; $("cam").hidden = !on; ui.cam.textContent = on ? "ปิดกล้อง" : "เปิดกล้อง";
@@ -515,6 +524,7 @@ async function switchDevice(kind) {
   if (!stream) return; // used when the next call starts
   const isMic = kind === "audioinput";
   const track = (await navigator.mediaDevices.getUserMedia(isMic ? { audio: { ...MIC, ...pick(kind) } } : { video: { ...CAM, ...pick(kind) } })).getTracks()[0];
+  if (isMic) track.enabled = micOn; // a new mic picked while off stays off
   const old = isMic ? stream.getAudioTracks() : stream.getVideoTracks();
   if (isMic) { await pc?.getSenders().find((x) => x.track?.kind === "audio")?.replaceTrack(track); userMeter = analyser(new MediaStream([track])); }
   old.forEach((t) => { t.stop(); stream.removeTrack(t); });
@@ -605,6 +615,7 @@ async function start() {
     else try { stream = await navigator.mediaDevices.getUserMedia({ audio, video: { ...CAM, ...pick("videoinput") } }); }
     catch { stream = await navigator.mediaDevices.getUserMedia({ audio }); notice("ใช้กล้องไม่ได้ จะคุยด้วยเสียงอย่างเดียว"); }
     if (stream.getVideoTracks().length) { $("camVideo").srcObject = stream; showCam(true); ui.cam.disabled = false; }
+    setMic(true); ui.mic.disabled = false;
     userMeter = analyser(stream);
     await listDevices(); switchDevice("audiooutput").catch(() => notice("เลือกลำโพงไม่ได้ ใช้ลำโพงของระบบแทน"));
 
@@ -655,7 +666,7 @@ function hangup() {
   clearInterval(frameTimer); demoTimers.forEach(clearTimeout); demoTimers = [];
   userMeter = botMeter = null; userLevel = botLevel = 0; botLi = null; statusText = "";
   $("camVideo").srcObject = null; $("remote").srcObject = null; $("cam").hidden = true; camOn = false;
-  ui.cam.disabled = true; ui.cam.textContent = "ปิดกล้อง";
+  ui.cam.disabled = true; ui.cam.textContent = "ปิดกล้อง"; setMic(true); ui.mic.disabled = true;
   archivePanel(); hidePanel(); ui.user.textContent = ""; ui.bot.textContent = ""; // cards stay: scroll back after the call
   sats.splice(0).forEach((s) => group.remove(s.m));
   ui.call.textContent = "เริ่มคุย"; ui.call.className = "btn primary"; ui.call.disabled = false;
