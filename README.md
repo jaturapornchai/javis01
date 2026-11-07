@@ -184,7 +184,10 @@ Register-ScheduledTask -TaskName 'javis voice agent' -Action $a -Trigger $t -Set
 ```powershell
 Stop-ScheduledTask -TaskName 'javis voice agent'
 Get-CimInstance Win32_Process -Filter "Name='python.exe' AND CommandLine LIKE '%voice_agent.py%'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-CimInstance Win32_Process -Filter "Name='ssh.exe' AND CommandLine LIKE '%:7861 %'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
+
+  บรรทัดที่ 3 ปิด tunnel ของสายลูกค้าที่ค้างอยู่ ถ้าไม่ปิด ตัวใหม่จะต่อ tunnel ไม่ได้ และ log ขึ้น "public tunnel closed, redialling" ทุก 10 วินาที (หน้าเว็บยังใช้ได้ เพราะ tunnel ตัวเก่ายังส่งต่อให้)
 
 - เปิดใหม่โดยไม่ต้อง logon: `Start-ScheduledTask -TaskName 'javis voice agent'`
 - เลิกเปิดอัตโนมัติ: `Unregister-ScheduledTask -TaskName 'javis voice agent' -Confirm:$false`
@@ -246,6 +249,40 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe' AND CommandLine LIKE '%
 ```bash
 .venv/Scripts/python.exe test_call.py
 ```
+
+## ปรับคำพูดจาก log สายจริง
+
+- **เป้าหมาย**: เลขาคุยเก่งขึ้นเรื่อยๆ จากสายจริง โดยไม่เปลือง token ตอนไม่มีใครโทร
+- **ทำงานอย่างไร**:
+  - ทุกบรรทัดใน `voice_agent.log` มีรหัสสาย (ส่วนท้ายของ webrtc_id, `-` = ไม่ได้อยู่ในสาย) ต่อจากเวลา
+  - log ยังบันทึกบรรทัดแผงที่ถูกตัด (`cut a panel line (judge|numbers …)`) เหมือนประโยคพูดที่ถูกตัด
+  - `watch_calls.py` อ่าน log ทุก 1 นาที เฉพาะส่วนที่เพิ่มหลังรอบก่อน (จำตำแหน่งไว้ที่ `sessions/watch_offset`) พอมีคนคุยแล้วเงียบไป 2 นาที จะพิมพ์สรุปสั้นๆ แล้วจบ การจบของสคริปต์คือสัญญาณให้ AI มาอ่าน
+  - สรุปมีเฉพาะบรรทัด USER, BOT, TOOLS, cut และ error ตัดวันที่ออก บรรทัดละไม่เกิน 220 ตัวอักษร สูงสุด 150 บรรทัด
+  - AI แก้ได้เฉพาะคำพูด คือ `SYSTEM_PROMPT` ใน `config.py` และ `SAY_WORDS` / `JUDGE_ASK` ใน `voice_agent.py`
+  - ก่อนรีสตาร์ท ต้องผ่าน `eval_talk.py`:
+    - ตัวตรวจต้องตัดประโยคแต่งที่เคยหลุดได้ครบ 9 ประโยค และตัดคำคุยเล่นผิดได้ไม่เกิน 2 จาก 5 ประโยค
+    - สายลูกค้าจำลอง 4 สาย (เริ่มด้วยคำทักจริง) ต้องไม่เงียบ ไม่เขียนคำสั่งเครื่องมือเป็นข้อความ ไม่จบด้วยการรับปากว่า "ขอผมอ่าน…" ไม่ถามชื่อเกิน 2 ครั้ง และคำถามระบบต้องมีแผงข้อมูล
+- **ใช้**:
+
+```bash
+.venv/Scripts/python.exe watch_calls.py
+```
+
+```bash
+.venv/Scripts/python.exe eval_talk.py
+```
+
+```bash
+.venv/Scripts/python.exe test_watch_calls.py
+```
+
+  - `watch_calls.py --once`: พิมพ์ส่วนที่ค้างอยู่ทันทีแล้วจบ ใช้ครั้งแรกเพื่อเริ่มนับจากท้าย log ปัจจุบัน
+  - `eval_talk.py`: ใช้เวลาประมาณ 1 นาที รันข้างเซิร์ฟเวอร์ที่เปิดอยู่ได้ (ไม่โหลดโมเดลลง GPU ใช้แค่ DeepSeek กับตัวตรวจบน Ollama) จบด้วย exit 0 = รีสตาร์ทได้
+- **ต้องมี**: `DEEPSEEK_API_KEY` ใน `.env`, Ollama ที่มีโมเดลตัวตรวจ, เน็ตไปคลังความรู้ BC
+- **ข้อจำกัด**:
+  - หัวหน้า DeepSeek ตอบไม่เหมือนเดิมทุกครั้ง ผ่าน `eval_talk.py` รอบเดียวยังไม่ได้แปลว่าสายจริงจะไม่พลาด
+  - ตัวดักคำรับปากลอยๆ (`STALL`) เป็นรายการคำ ถ้าเลขาใช้คำแบบใหม่จะหลุดจนกว่าจะเพิ่มคำนั้น
+  - log มีคำพูดลูกค้าจริง (เลขบัตร/เบอร์ยาวถูกปิดเป็น `###` แล้ว แต่ชื่อยังอยู่) ห้ามส่งออกนอกเครื่อง
 
 ## เปิดให้ลูกค้าคุยผ่านเว็บ (https://javis.bcsmethai.com)
 

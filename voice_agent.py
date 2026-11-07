@@ -406,6 +406,16 @@ def call_id():
         return ""
 
 
+def tag_call(record):  # every log line names its call ("-" outside one), so watch_calls.py can tell calls apart;
+    record.call = call_id().rpartition("_")[2] or "-"  # the call part only: the session part keys a caller's history
+    return True
+
+
+for h in logging.getLogger().handlers:  # lines logged before this point keep the plain format
+    h.addFilter(tag_call)
+    h.setFormatter(logging.Formatter("%(asctime)s %(call)s %(message)s"))
+
+
 def take(key, empty):
     p = PENDING[call_id()]
     value, p[key] = p[key], empty
@@ -564,10 +574,11 @@ def panel_events(tokens, screen, known, sources, turn):
         if len(lines) <= turn.get("lines", 0):
             continue
         for ln in lines[turn.get("lines", 0):]:
-            if not re.search(r"\w", ln) or (not grounding.unsourced(ln, known) and judge(sources, ln, "\n".join(kept))):
+            if not re.search(r"\w", ln) or (not (bad := grounding.unsourced(ln, known)) and judge(sources, ln, "\n".join(kept))):
                 m = MAP_LINE.match(ln)  # the page draws a map where the line carries "@lat,lon"
                 kept.append(f"{ln} @{geo}" if m and (geo := geocode(m[1])) else ln)  # blank and |---| lines need no check
-            else:
+            else:  # logged like a spoken cut: javis 2026-11-07 showed a panel of only CUT_SHOW, with no trace why
+                log.info("cut a panel line (%s): %s", f"numbers {masked(' '.join(sorted(bad)))}" if bad else "judge", masked(ln))
                 turn["panel_cut"] = True
         turn["lines"] = len(lines)
         if turn.get("panel", "") != (text := "\n".join(kept + [grounding.CUT_SHOW] * turn.get("panel_cut", 0)).strip()):
@@ -607,7 +618,9 @@ JUDGE_ASK = (
     "things, stock, branches, bills, problem, wish or feeling) or to react kindly to what the user just said "
     "(เหนื่อยไหม, สาขาไหน, ติดปัญหาตรงไหน, สต็อกแยกกันหรือใช้ร่วมกัน, ช้าตอนพิมพ์, อยากให้ช่วยคำนวณให้เองใช่ไหม, "
     "เดินทางลำบาก, ยินดีที่ได้รู้จัก, ไม่ต้องรีบ). same_as_source = a Thai reading, other spelling or plain "
-    "synonym of a word that IS in SOURCES; put that SOURCES word in source_word (แฟล็ก -> flag). new_info = "
+    "synonym of a word that IS in SOURCES; put that SOURCES word in source_word (แฟล็ก -> flag). "
+    # log 2026-11-07 22:02 replays: true panel lines cut for "(Ctrl+S)", "(IA)", "**2)" though the note has Ctrl+S, IA
+    "A SOURCES word with brackets, stars or other marks stuck to it is same_as_source too ((Ctrl+S) -> Ctrl+S). new_info = "
     "anything the assistant states or offers about itself, its product, a service or the world that SOURCES do "
     "not say, even inside a question, and any guess or advice it states (not asks) about the user, their shop or "
     "their customers (น่าจะชอบ, ต้องระวัง): a feature, service, price, free thing, discount, trial, visit, "
@@ -618,6 +631,11 @@ JUDGE_ASK = (
 # broke the answer up ("ส่วนนี้ผมไม่เจอ... หรือครับ ให้ช่วยอะไรครับ")
 CUT_END = "ส่วนที่เหลือผมไม่เจอในแหล่งข้อมูล ขอไม่เดานะครับ"
 CUT_ALL = "เรื่องนี้ผมไม่เจอในแหล่งข้อมูลครับ ขอไม่เดานะครับ"
+# DeepSeek at times ends a round on a promise ("ขอผมอ่านรายละเอียดก่อนนะครับ") with no tool call, and the turn went
+# quiet (javis 2026-11-07: 5 turns of one call, the first with no history). ponytail: a phrase list; a new wording
+# slips past until it is added here
+STALL = re.compile(r"(ขอ|เดี๋ยว)(ผม)?(ให้(ลูก)?ทีม)?(อ่าน|เปิด|ค้น|ดู|เช็ก|ตรวจ)")
+STALL_NUDGE = "(ระบบ: คุณบอกว่าจะอ่านหรือค้นเพิ่ม แต่ยังไม่ได้สั่งลูกทีม ให้เรียกเครื่องมือตอนนี้เลย หรือตอบจากผลที่ลูกทีมค้นให้แล้ว ห้ามบอกว่าจะอ่านอีก)"
 BRAIN_DOWN = "ขอโทษครับ ตอนนี้ระบบตอบไม่ได้ชั่วคราว รบกวนถามใหม่อีกครั้งนะครับ"
 # the secretary's own fixed lines: a word a filler already said ("ขอดูภาพจากกล้อง") is no new claim when the answer
 # repeats it. The judge cut "จากภาพตอนนี้เห็นเป็นสีขาวกับวงกลมสีแดงครับ" over ภาพ though the camera saw exactly that
@@ -825,6 +843,10 @@ def reply(audio, public=False):
             if turn.get("silent"):
                 break
             yield from panel_events(tokens, screen, known, sources, turn)
+            if not calls and rnd < C.MAX_TOOL_ROUNDS and not turn.get("nudged") and STALL.search(" ".join(said[said_before:])):
+                turn["nudged"] = True  # once: a second bare promise just ends the turn
+                messages += [{"role": "assistant", "content": " ".join(said[said_before:])}, {"role": "user", "content": STALL_NUDGE}]
+                continue
             if not calls:
                 break
             messages.append({"role": "assistant", "content": " ".join(said[said_before:]), "tool_calls": [
@@ -838,7 +860,7 @@ def reply(audio, public=False):
             said.append(text)
             yield (C.TTS_SAMPLE_RATE, speak(text)), AdditionalOutputs({"kind": "bot", "text": text})
     finally:  # also runs after barge-in; history may hold a chunk that was queued but cut before playback
-        details = turn.get("panel", "")  # only lines that passed both checks; an unchecked rest is no memory
+        details = "\n".join(turn.get("kept", []))  # only lines that passed both checks, never the CUT_SHOW note; an unchecked rest is no memory
         answer = C.SILENT_MARK if turn.get("silent") else " ".join(said) + (f"\n{C.SCREEN_MARK}\n{details[:800]}" if details else "")
         history.extend([{"role": "user", "content": asked}, {"role": "assistant", "content": answer}])
         del history[: -2 * C.HISTORY_TURNS]
