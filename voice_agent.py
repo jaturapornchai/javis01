@@ -1,6 +1,6 @@
 """Local real-time Thai voice assistant (phone-call style secretary).
 
-Browser (static/index.html: mic over WebRTC, camera frames, MediaPipe gestures, three.js screen)
+Browser (static/index.html: mic over WebRTC, camera frames, MediaPipe gestures, SVG status ring)
     -> FastRTC (Silero VAD pause detection, barge-in) -> faster-whisper Thai (STT)
     -> DeepSeek streaming + tools (web, docs, camera, bcbrain MCP)
     -> spoken summary -> OmniVoice -> speaker;   details after [จอ] -> on-screen panel

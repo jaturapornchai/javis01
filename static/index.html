@@ -5,11 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ผู้ช่วยเสียงภาษาไทย</title>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:radial-gradient(60% 45% at 15% 0%,rgba(124,58,237,.28),transparent),radial-gradient(50% 40% at 90% 5%,rgba(14,165,233,.24),transparent),radial-gradient(70% 50% at 50% 105%,rgba(236,72,153,.2),transparent),#05070f;color:#e8ecf5;font-family:"Noto Sans Thai","Leelawadee UI","Sarabun",Tahoma,sans-serif}
-#bg{position:fixed;inset:0;width:100%;height:100%;display:block}
 button,summary{font:inherit;color:inherit}
 :focus-visible{outline:2px solid #22d3ee;outline-offset:2px}
 .glass{background:rgba(10,14,28,.62);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:12px}
@@ -39,7 +37,7 @@ button,summary{font:inherit;color:inherit}
 #note{position:fixed;top:64px;left:50%;transform:translateX(-50%);padding:8px 16px;z-index:6;font-size:14px;color:#fde68a}
 #note:empty{display:none}
 
-/* the side columns' widths, one place for the CSS and the orb (JS): narrower on a laptop so the panel keeps room */
+/* the side columns' widths, one place: narrower on a laptop so the panel keeps room */
 :root{--lw:280px;--cw:min(320px,42vw)}
 @media (min-width:901px) and (max-width:1279px){:root{--lw:220px;--cw:240px}}
 #left{position:fixed;left:16px;top:72px;bottom:196px;width:var(--lw);max-width:80vw;z-index:4;display:flex;flex-direction:column;gap:8px;pointer-events:none}
@@ -80,7 +78,17 @@ a.card:hover{border-color:#a78bfa;background:rgba(30,27,75,.7)}
 .card h3{margin:4px 0 2px;font-size:14px;line-height:1.35}
 .card p{margin:0;font-size:12.5px;line-height:1.45;color:#c3cbe0;display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 
-#pill{position:fixed;left:50%;top:68%;transform:translateX(-50%);height:40px;line-height:28px;padding:5px 18px;border-radius:20px;z-index:3;font-size:16px;white-space:nowrap;max-width:90vw;overflow:hidden;text-overflow:ellipsis}
+/* the HUD ring floats over everything (ลุงจืด 2026-11-09 "เอาลอยไว้ด้านหน้า ปรับขนาดได้ ย้ายได้"): drag it, drag its corner
+   to resize, double-click puts it back here; its color is the state, its spin how hard it works */
+#hud{position:fixed;left:calc(100vw - 174px);top:calc(100vh - 174px);width:150px;aspect-ratio:1;z-index:6;color:#7fa6e0;transition:color .6s;cursor:grab;touch-action:none;user-select:none;container-type:inline-size}
+#hud[data-s=listening]{color:#22d3ee}#hud[data-s=thinking],#hud[data-s=searching]{color:#fbbf24}#hud[data-s=speaking]{color:#a78bfa}
+#hud.drag{cursor:grabbing}
+#hud::before{content:"";position:absolute;inset:3%;border-radius:50%;background:radial-gradient(circle,rgba(6,10,22,.85) 60%,rgba(6,10,22,.4) 72%,transparent 73%);backdrop-filter:blur(6px)}
+#hud svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;filter:drop-shadow(0 0 4px currentColor)}
+#pill{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:56%;font-size:clamp(10px,9cqw,24px);line-height:1.3;color:#e8ecf5;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+#hud .grip{position:absolute;right:0;bottom:0;width:18px;height:18px;border:solid currentColor;border-width:0 2px 2px 0;border-radius:0 0 6px 0;cursor:nwse-resize;opacity:0;transition:opacity .2s}
+#hud:hover .grip,#hud.drag .grip{opacity:.8}
+@media (hover:none){#hud .grip{opacity:.5}}
 
 #subs{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);width:min(760px,calc(100vw - 600px));min-width:300px;padding:12px 20px;text-align:center;z-index:3;background:radial-gradient(ellipse at center,rgba(5,7,15,.75),rgba(5,7,15,.35));border-radius:16px}
 #subs:has(#bot:empty):has(#user:empty){visibility:hidden}
@@ -99,8 +107,8 @@ a.card:hover{border-color:#a78bfa;background:rgba(30,27,75,.7)}
 #cam video{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;transform:scaleX(-1);background:#000}
 #cam b{position:absolute;left:8px;top:6px;font-size:12px;background:rgba(0,0,0,.55);padding:1px 8px;border-radius:8px}
 
-/* panel mode, always on (ลุงจืด 2026-11-04 "เน้นแสดงข้อมูลแน่นๆ"): the info panel fills the screen, the orb sits on top of it */
-#panel{position:fixed;left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);top:166px;bottom:184px;z-index:3;display:flex;flex-direction:column;padding:12px 18px;animation:pin .5s ease both}
+/* panel mode, always on (ลุงจืด 2026-11-04 "เน้นแสดงข้อมูลแน่นๆ"): the info panel fills the screen, the HUD floats over it */
+#panel{position:fixed;left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);top:72px;bottom:184px;z-index:3;display:flex;flex-direction:column;padding:12px 18px;animation:pin .5s ease both}
 #panel .ph{display:flex;align-items:center;gap:10px;margin:0 0 6px}
 #panel h2{margin:0;flex:1;min-width:0;font-size:15px;line-height:30px;color:#aab4cc;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #pback{height:30px;padding:0 12px;font-size:13px;flex:none}
@@ -143,7 +151,6 @@ a.card:hover{border-color:#a78bfa;background:rgba(30,27,75,.7)}
 .md .map figcaption{font-size:13px;color:#aab4cc;margin-top:4px}
 #trlist summary{height:auto;line-height:1.5;font-weight:400;color:#aab4cc}
 #trlist .md{font-size:13px;padding-top:4px}
-body.panel #pill{left:calc(50vw + 72px);top:84px;transform:none;height:32px;line-height:22px;font-size:14px;padding:5px 14px}
 body.panel #subs{left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);width:auto;min-width:0;transform:none;bottom:76px;padding:8px 16px}
 body.panel #chat{left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);width:auto;min-width:0;transform:none}
 body.panel #bot{font-size:22px;max-height:2.9em}
@@ -154,10 +161,10 @@ body.panel #user{font-size:15px}
 .gt .lbl{font-size:22px;line-height:1.3;padding:4px 16px;background:rgba(5,7,15,.7);border-radius:16px}
 @keyframes gt{0%{opacity:0;transform:scale(.4)}15%{opacity:1;transform:scale(1.15)}25%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:scale(.9)}}
 @media (max-width:900px){
-  /* phone: orb on top, panel in the middle, a row of cards above the subtitles and the chat bar */
+  /* phone: HUD top right, panel in the middle, a row of cards above the subtitles and the chat bar */
   #top{gap:6px;padding:12px 8px}#top h1{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}#top .btn{padding:0 12px;white-space:nowrap}
-  #panel{left:8px;right:8px;top:166px;bottom:296px}
-  body.panel #pill{left:calc(50vw + 50px);top:98px}
+  #panel{left:8px;right:8px;top:72px;bottom:296px}
+  #hud{left:calc(100vw - 92px);top:68px;width:84px}
   body.panel #subs{left:8px;right:8px;bottom:186px}body.panel #bot{font-size:18px}
   body.panel #chat{left:8px;right:8px}
   #cards{top:auto;bottom:64px;left:8px;right:8px;width:auto;height:118px;flex-direction:row;overflow:auto hidden}
@@ -168,7 +175,6 @@ body.panel #user{font-size:15px}
 </style>
 </head>
 <body class="panel">
-<canvas id="bg" aria-hidden="true"></canvas>
 <header id="top">
   <h1>ผู้ช่วยเสียงภาษาไทย</h1>
   <span class="hint">ควรใส่หูฟัง</span>
@@ -202,7 +208,17 @@ body.panel #user{font-size:15px}
 </details>
 </div>
 <div id="toast"></div>
-<div id="pill" class="glass" role="status" aria-live="polite">พร้อมคุย</div>
+<div id="hud" data-s="idle" title="ลากเพื่อย้าย · ลากมุมขวาล่างเพื่อย่อขยาย · ดับเบิลคลิกเพื่อคืนที่เดิม">
+<svg viewBox="-100 -100 200 200" fill="none" stroke="currentColor" aria-hidden="true">
+<g id="r1"><circle r="97" stroke-width="5" stroke-dasharray="0.8 4.28" opacity=".45"/><circle r="96" stroke-width="9" stroke-dasharray="1 24.13" opacity=".9"/></g>
+<g id="r2"><circle r="88" stroke-width="3" stroke-dasharray="60 8 20 8 110 30 14 8 90 40 30 8 128 11" opacity=".85"/></g>
+<g id="r3"><circle r="77" stroke-width="1.5" stroke-dasharray="300 184"/><circle r="77" stroke-width="6" stroke-dasharray="2 3.4 2 3.4 2 3.4 2 467" opacity=".9"/></g>
+<circle r="69" stroke-width="6" stroke-dasharray="2 3.42" opacity=".25"/>
+<circle id="core" r="56" stroke-width="3"/><circle id="ping" r="56" stroke-width="2" opacity="0"/>
+<g id="sats" stroke="none"></g>
+</svg>
+<div id="pill" role="status" aria-live="polite">พร้อมคุย</div><i class="grip" aria-hidden="true"></i>
+</div>
 <section id="panel" class="glass" aria-label="ข้อมูล"><div class="ph"><button id="pback" class="btn" type="button" hidden>‹ ย้อนกลับ</button><h2 id="ptitle">ข้อมูล</h2></div><div id="pbody" class="md"></div></section>
 <div id="cards" aria-label="ข้อมูลที่เกี่ยวข้อง"></div>
 <div id="subs" aria-live="polite"><div id="user"></div><div id="bot"></div></div>
@@ -211,8 +227,6 @@ body.panel #user{font-size:15px}
 <audio id="remote" autoplay hidden></audio>
 
 <script type="module">
-import * as THREE from "three";
-
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const demo = new URLSearchParams(location.search).get("demo") === "1";
@@ -230,9 +244,7 @@ const GESTURES = { // only finger-count choices (ลุงจืด 2026-11-04);
   fingers_4: ["4️⃣", "เลือกข้อ 4", "ชูนิ้ว 4"], fingers_5: ["🖐️", "เลือกข้อ 5", "แบมือ 5 นิ้ว"],
 };
 const LABEL = { idle: "พร้อมคุย", listening: "กำลังฟัง…", thinking: "กำลังคิด…", searching: "กำลังคิด…", speaking: "กำลังพูด…" };
-const STATE = { // color, spin speed
-  idle: [0x5b7aa8, 0.15], listening: [0x22d3ee, 0.3], thinking: [0xfbbf24, 1.2], searching: [0xfbbf24, 1.2], speaking: [0x8b5cf6, 0.5],
-};
+const SPIN = { idle: 0.15, listening: 0.3, thinking: 1.2, searching: 1.2, speaking: 0.5 }; // the HUD's spin per state, its color is CSS
 const SRC = { web: ["เว็บ", 0x60a5fa], docs: ["เอกสารในเครื่อง", 0x4ade80], camera: ["กล้อง", 0xf472b6], bcbrain: ["คลังความรู้ BC", 0xfb923c],
   gmail: ["อีเมล", 0xf87171], calendar: ["ปฏิทิน", 0xa78bfa], drive: ["Google Drive", 0xfacc15], desktop: ["คอมพิวเตอร์", 0x2dd4bf],
   calc: ["เครื่องคิดเลข", 0xe879f9], deepseek: ["ความรู้ทั่วไป", 0x818cf8] };
@@ -244,8 +256,8 @@ const ui = { call: $("callBtn"), mic: $("micBtn"), cam: $("camBtn"), pill: $("pi
 /* ---------- UI state ---------- */
 function render() { ui.pill.textContent = statusText || LABEL[state]; }
 function setState(s) {
-  if (s !== state) pulse = Math.max(pulse, 0.6); // every state change rings out from the orb
-  state = s; render();
+  if (s !== state) pulse = Math.max(pulse, 0.6); // every state change rings out from the HUD
+  state = s; render(); hud.dataset.s = s;
   if (team.boss) { team.boss.st.textContent = BOSS[s]; team.boss.li.className = "boss" + (s === "idle" ? "" : " run"); }
 }
 function notice(msg) { ui.note.textContent = msg; }
@@ -313,7 +325,7 @@ function onTeam({ id, state: st, worker, task, secs }) {
     const r = team.rows[worker] || teamRow(worker);
     if (!r.run.size) r.t0 = performance.now();
     team.jobs[id] = worker; r.run.add(id); r.li.className = "run"; r.tk.textContent = task || "";
-    addSatellite(worker); // the worker also orbits the boss orb while it works
+    addSatellite(worker); // the worker also rides the HUD ring while it works
     return teamCount();
   }
   const r = team.rows[team.jobs[id]];
@@ -363,126 +375,59 @@ function addCard(card) {
   if (!card.slug || !turnBox.querySelector(`[data-slug="${CSS.escape(card.slug)}"]`)) turnBox.append(makeCard(card)); // a note read after its search hit: one card
 }
 
-/* ---------- three.js scene ---------- */
-const canvas = $("bg");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
-camera.position.z = 5;
-const ORB = { y: 104, size: 116, phoneY: 114, phoneSize: 76 }; // px: center height and diameter, on top of the info panel
-const group = new THREE.Group(); scene.add(group); // starts mid-screen and flies up on load
-
-const orbMat = new THREE.ShaderMaterial({
-  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
-  uniforms: { uT: { value: 0 }, uAmp: { value: 0 }, uColor: { value: new THREE.Color(STATE.idle[0]) } },
-  vertexShader: `uniform float uT,uAmp;varying vec3 vN;varying vec3 vV;varying vec3 vP;
-    float n(vec3 p){return sin(p.x*1.7+uT)*sin(p.y*1.9-uT*.8)*sin(p.z*1.5+uT*.6);}
-    void main(){vec3 p=position;float d=n(p*1.8)*.6+n(p*3.7)*.4;p+=normal*d*(.06+uAmp*.5);vP=p;
-      vec4 mv=modelViewMatrix*vec4(p,1.);vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
-  // iridescent: hue runs over rim, height and time (cosine palette), the state color tints it, moving bands add detail
-  fragmentShader: `uniform float uT,uAmp;uniform vec3 uColor;varying vec3 vN;varying vec3 vV;varying vec3 vP;
-    vec3 pal(float t){return .5+.5*cos(6.2832*(t+vec3(0.,.33,.67)));}
-    void main(){float f=pow(1.-abs(dot(normalize(vN),normalize(vV))),2.);
-      vec3 c=mix(pal(f*.9+vP.y*.3+vP.x*.2+uT*.12),uColor,.3);
-      float b=.5+.5*sin(vP.y*22.+uT*4.)*sin(vP.x*9.-uT*2.);
-      gl_FragColor=vec4(c*(.3+f*1.7+b*.25*(.4+uAmp*2.)),.35+f*.65);}`,
-});
-const orb = new THREE.Mesh(new THREE.IcosahedronGeometry(1.1, 24), orbMat);
-group.add(orb);
-
-function glowTexture() {
-  const c = document.createElement("canvas"); c.width = c.height = 128;
-  const g = c.getContext("2d"), r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-  r.addColorStop(0, "rgba(255,255,255,1)"); r.addColorStop(1, "rgba(255,255,255,0)");
-  g.fillStyle = r; g.fillRect(0, 0, 128, 128);
-  return new THREE.CanvasTexture(c);
+/* ---------- HUD ring ---------- */
+const hud = $("hud");
+function placeHud(p) { // clamped to the screen, below the top bar
+  const s = Math.max(72, Math.min(p.s, 480, innerWidth, innerHeight - 64));
+  const x = Math.max(0, Math.min(p.x, innerWidth - s)), y = Math.max(64, Math.min(p.y, innerHeight - s));
+  Object.assign(hud.style, { left: x + "px", top: y + "px", width: s + "px" });
+  return { x, y, s };
 }
-const glowTex = glowTexture();
-const glowMat = (color, opacity) => new THREE.SpriteMaterial({ map: glowTex, color, opacity, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true });
-const halo = new THREE.Sprite(glowMat(STATE.idle[0], 0.55)); halo.scale.setScalar(5); group.add(halo);
-const core = new THREE.Sprite(glowMat(0xffffff, 0.7)); core.scale.setScalar(1.5); group.add(core); // white-hot heart, beats with the voice
-const pulseRing = new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.02, 8, 128),
-  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-group.add(pulseRing);
-let pulse = 0;
+// a sum of three numbers is finite, anything else stored there is not
+const savedHud = () => { try { const p = JSON.parse(localStorage.getItem("hud")); return Number.isFinite(p?.x + p?.y + p?.s) ? p : null; } catch { return null; } };
+const fitHud = () => { const p = savedHud(); if (p) placeHud(p); }; // none saved: the CSS spot
+fitHud(); addEventListener("resize", fitHud);
+hud.onpointerdown = (e) => {
+  if (e.button) return;
+  const r = hud.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY, grip = e.target.classList.contains("grip");
+  let at = null;
+  hud.setPointerCapture(e.pointerId); hud.classList.add("drag");
+  hud.onpointermove = (m) => {
+    const dx = m.clientX - x0, dy = m.clientY - y0;
+    at = placeHud(grip ? { x: r.left, y: r.top, s: r.width + Math.max(dx, dy) } : { x: r.left + dx, y: r.top + dy, s: r.width });
+  };
+  hud.onpointerup = hud.onpointercancel = () => {
+    hud.onpointermove = null; hud.classList.remove("drag");
+    if (at) try { localStorage.setItem("hud", JSON.stringify(at)); } catch {} // private mode: it stays put until reload
+  };
+};
+hud.ondblclick = () => { try { localStorage.removeItem("hud"); } catch {} hud.removeAttribute("style"); };
 
-const rings = [0x22d3ee, 0xe879f9, 0xfbbf24].map((color, i) => { // three colored orbits, two sparks racing round each
-  const m = new THREE.Mesh(new THREE.TorusGeometry(1.55 + i * 0.3, 0.01, 8, 200),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
-  m.rotation.set(1.2 - i * 0.6, i * 0.8, i * 0.4);
-  m.sparks = [0, Math.PI].map((a) => { const s = new THREE.Sprite(glowMat(color, 1)); s.scale.setScalar(0.4); s.a = a + i; m.add(s); return s; });
-  group.add(m); return m;
-});
-
-function points(n, rMin, rMax, size, opacity, sat) { // every point its own random hue
-  const a = new Float32Array(n * 3), rgb = new Float32Array(n * 3), col = new THREE.Color();
-  for (let i = 0; i < n; i++) {
-    const r = rMin + Math.random() * (rMax - rMin), th = Math.random() * 6.283, ph = Math.acos(2 * Math.random() - 1);
-    a.set([r * Math.sin(ph) * Math.cos(th), r * Math.sin(ph) * Math.sin(th), r * Math.cos(ph)], i * 3);
-    col.setHSL(Math.random(), sat, 0.72); rgb.set([col.r, col.g, col.b], i * 3);
-  }
-  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(a, 3)); g.setAttribute("color", new THREE.BufferAttribute(rgb, 3));
-  return new THREE.Points(g, new THREE.PointsMaterial({ size, map: glowTex, vertexColors: true, transparent: true, // round soft dots, not squares
-     opacity, depthWrite: false, blending: THREE.AdditiveBlending }));
-}
-const stars = points(1200, 4, 14, 0.06, 0.8, 0.45); scene.add(stars);
-const swirl = points(360, 1.4, 2.4, 0.09, 0.35, 0.95); group.add(swirl); // rainbow dust, thicker while thinking
-
-const sats = [];
-function addSatellite(source) {
-  const color = Object.hasOwn(SRC, source) ? SRC[source][1] : OTHER_COLOR;
-  const m = new THREE.Mesh(new THREE.SphereGeometry(0.08, 16, 16), new THREE.MeshBasicMaterial({ color }));
-  const g = new THREE.Sprite(glowMat(color, 0.9)); g.scale.setScalar(0.7); m.add(g);
-  sats.push({ m, r: 1.9 + Math.random() * 0.6, sp: 0.5 + Math.random() * 0.6, a: Math.random() * 6.28, tilt: Math.random() * 1.2 - 0.6 });
-  group.add(m);
-  if (sats.length > 6) group.remove(sats.shift().m);
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const rings = ["r1", "r2", "r3"].map((id) => $(id)), core = $("core"), ping = $("ping");
+const RATE = [8, -14, 26]; // degrees a second at rest, alternate ways round
+const turn = [0, 0, 0], sats = [];
+function addSatellite(source) { // the worker rides the outer ring while it works
+  const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  c.setAttribute("r", 5); c.setAttribute("fill", hex(Object.hasOwn(SRC, source) ? SRC[source][1] : OTHER_COLOR));
+  $("sats").append(c); sats.push({ c, a: Math.random() * 6.28, sp: 0.5 + Math.random() * 0.6 });
+  if (sats.length > 6) sats.shift().c.remove();
 }
 
-let sideL = 312, sideR = 352; // the panel's left and right edges, from the CSS columns (--lw, --cw)
-function resize() {
-  const css = getComputedStyle(document.getElementById("panel"));
-  sideL = parseFloat(css.left) || 312; sideR = parseFloat(css.right) || 352;
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  renderer.setPixelRatio(dpr); renderer.setSize(innerWidth, innerHeight, false);
-  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
-}
-addEventListener("resize", resize); resize();
-
-let amp = 0, spin = 0.15, t0 = performance.now(), last = t0;
-const tint = new THREE.Color(STATE.idle[0]);
+let amp = 0, spin = 0.15, pulse = 0, last = performance.now();
 function frame(now) {
-  const dt = Math.min((now - last) / 1000, 0.1), t = (now - t0) / 1000; last = now;
-  const [col, spd] = STATE[state];
-  tint.lerp(new THREE.Color(col), Math.min(1, dt * 3));
-  spin += (spd - spin) * Math.min(1, dt * 3);
-  let target = state === "listening" ? userLevel : state === "speaking" ? botLevel : state === "idle" ? 0.03 : 0.12;
+  const dt = Math.min((now - last) / 1000, 0.1); last = now;
+  spin += (SPIN[state] - spin) * Math.min(1, dt * 3);
+  const target = state === "listening" ? userLevel : state === "speaking" ? botLevel : state === "idle" ? 0.03 : 0.12;
   amp += (Math.min(1, target * 2.5) - amp) * Math.min(1, dt * 10);
-  orbMat.uniforms.uT.value = t * (0.6 + spin); orbMat.uniforms.uAmp.value = amp; orbMat.uniforms.uColor.value.copy(tint);
-  orb.rotation.y += dt * spin; orb.scale.setScalar(1 + amp * 0.12);
-  halo.material.color.setHSL((t * 0.04) % 1, 0.8, 0.55).lerp(tint, 0.4); halo.material.opacity = 0.35 + amp * 0.5;
-  core.material.opacity = 0.35 + amp * 0.9; core.scale.setScalar(1.2 + amp * 1.2);
-  rings.forEach((r, i) => {
-    const dir = i % 2 ? -1 : 1, R = r.geometry.parameters.radius;
-    r.rotation.z += dt * spin * dir * (1 + i * 0.3); r.material.opacity = 0.35 + amp * 0.6;
-    for (const s of r.sparks) { s.a += dt * dir * (1.2 + spin * 2 + amp * 6); s.position.set(Math.cos(s.a) * R, Math.sin(s.a) * R, 0); }
-  });
-  stars.rotation.y += dt * 0.02 * (1 + spin * 2);
-  const thinking = state === "thinking" || state === "searching";
-  swirl.material.opacity += ((thinking ? 0.95 : 0.35) - swirl.material.opacity) * Math.min(1, dt * 3);
-  swirl.rotation.y += dt * spin * 1.5; swirl.rotation.x += dt * spin * 0.5;
+  if (!still) rings.forEach((g, i) => g.setAttribute("transform", `rotate(${(turn[i] = (turn[i] + dt * RATE[i] * (1 + spin * 3)) % 360).toFixed(2)})`));
+  core.setAttribute("transform", `scale(${(1 + amp * 0.18).toFixed(3)})`); core.style.opacity = 0.5 + amp * 0.5; // beats with the voice
+  pulse = Math.max(0, pulse - dt * 1.5);
+  ping.setAttribute("transform", `scale(${(1 + (1 - pulse) * 0.75).toFixed(3)})`); ping.style.opacity = pulse;
   for (const s of sats) {
     s.a += dt * s.sp * (1 + spin);
-    s.m.position.set(Math.cos(s.a) * s.r, Math.sin(s.a) * s.r * Math.sin(s.tilt), Math.sin(s.a) * s.r * Math.cos(s.tilt));
+    s.c.setAttribute("cx", (Math.cos(s.a) * 88).toFixed(1)); s.c.setAttribute("cy", (Math.sin(s.a) * 88).toFixed(1));
   }
-  const upp = 2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / innerHeight, k = Math.min(1, dt * 4); // world units per px
-  const wide = innerWidth > 900, ox = wide ? (sideL + innerWidth - sideR) / 2 : innerWidth / 2; // centered over the panel
-  const tx = (ox - innerWidth / 2) * upp, ty = (innerHeight / 2 - (wide ? ORB.y : ORB.phoneY)) * upp;
-  group.position.x += (tx - group.position.x) * k; group.position.y += (ty - group.position.y) * k;
-  group.scale.setScalar(group.scale.x + ((wide ? ORB.size : ORB.phoneSize) * upp / 2.2 - group.scale.x) * k);
-  pulse = Math.max(0, pulse - dt * 1.5);
-  pulseRing.visible = pulse > 0; pulseRing.scale.setScalar(1.2 + (1 - pulse) * 1.8);
-  pulseRing.material.opacity = pulse * 0.8; pulseRing.material.color.setHSL((t * 0.3) % 1, 0.9, 0.65);
-  renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -684,7 +629,7 @@ function hangup() {
   $("camVideo").srcObject = null; $("remote").srcObject = null; $("cam").hidden = true; camOn = false;
   ui.cam.disabled = true; ui.cam.textContent = "ปิดกล้อง"; setMic(true); ui.mic.disabled = true;
   archivePanel(); hidePanel(); ui.user.textContent = ""; ui.bot.textContent = ""; // cards stay: scroll back after the call
-  sats.splice(0).forEach((s) => group.remove(s.m));
+  sats.splice(0).forEach((s) => s.c.remove());
   ui.call.textContent = "เริ่มคุย"; ui.call.className = "btn primary"; ui.call.disabled = false;
   setState("idle");
 }
@@ -908,7 +853,7 @@ function runDemo() {
     [11200, () => onEvent({ kind: "done" })],
   ];
   for (const [d, fn] of script) demoTimers.push(setTimeout(fn, d));
-  // fake mic/bot levels so the orb moves without audio
+  // fake mic/bot levels so the HUD moves without audio
   demoTimers.push(setInterval(() => {
     const s = (performance.now() - t0) / 1000, w = 0.5 + 0.5 * Math.sin(s * 9) * Math.sin(s * 2.3);
     userLevel = state === "listening" ? 0.15 * w : 0; botLevel = state === "speaking" ? 0.2 * w : 0;
