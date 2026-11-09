@@ -1,15 +1,13 @@
-"""End-to-end check without a mic or camera: a real WebRTC call (aiortc client) into the same app voice_agent serves.
+"""End-to-end check without a mic: a real WebRTC call (aiortc client) into the same app voice_agent serves.
 
 Turn 0 is the secretary's own greeting when the call connects, turn 1 asks about a local document (search_docs),
-turn 2 asks what the camera sees (a red circle frame) and is talked over (barge-in), turn 3 is a two-finger choice
-gesture with no speech, turn 4 is typed chat about BC (knowledge base first). Subtitles/cards/panel/team come over SSE.
+turn 2 asks for a sum and is talked over (barge-in), turn 3 is typed chat about BC (knowledge base first). Subtitles/cards/panel/team come over SSE.
 Bot audio is saved to out_call.wav. Stop voice_agent.py first (this loads its own models).
 Run: python test_call.py
 """
 import asyncio
 import base64
 import fractions
-import io
 import json
 import os
 import tempfile
@@ -27,7 +25,6 @@ import uvicorn
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame
-from PIL import Image, ImageDraw
 
 import config as C
 import voice_agent as va
@@ -158,8 +155,6 @@ with open(os.path.join(C.DOCS_DIR, "ร้าน.txt"), "w", encoding="utf-8") a
     f.write("ข้อมูลทั่วไป\n" * 200 + "ร้านกาแฟลุงจืด เปิดทุกวัน เวลาเจ็ดโมงเช้าถึงหกโมงเย็น ปิดทุกวันพุธ\n")
 cards, _ = va.search_docs("ร้านกาแฟ เวลาเปิด")
 assert cards and "เจ็ดโมง" in cards[0]["snippet"], cards
-ui = open(os.path.join(C.BASE_DIR, "static", "index.html"), encoding="utf-8").read()
-assert all(f'"{g}"' in ui or g.startswith("fingers_") for g in va.GESTURES), "gesture ids out of sync with the UI"
 
 # --- models + server ---------------------------------------------------------------------------------------------
 va.stt = va.load_stt()
@@ -232,8 +227,6 @@ spoken = [o for o in va.reply((48000, speech)) if isinstance(o, tuple) and isins
 va.llm_tokens = real
 assert not spoken and va.SESSIONS[""][-1]["content"] == C.SILENT_MARK, spoken
 assert all(va.speak("ครับ").size for _ in range(20)), "a short word came out as 0 samples"  # it did 3 of 20 times
-# the camera filler said ภาพ first, so the answer may say it too (the judge cut a true camera answer over it)
-assert not va.grounding.new_words("จากภาพตอนนี้เห็นเป็นสีขาวกับวงกลมสีแดงครับ", "ตอนนี้ในกล้องเห็นอะไรบ้างครับ\nสีขาว วงกลมสีแดง\n" + va.OWN_WORDS)
 # DeepSeek sometimes writes a tool call as its own DSML text (a call spoke "<｜｜DSML｜｜ invoke ..." and searched
 # nothing): none of it reaches the caller, and the call still runs
 DSML_TOKENS = ["เข้าใจครับ <", '｜｜DSML｜｜calls>\n<｜｜DSML｜｜invoke name="read_note">\n<｜｜DSML｜｜parameter name="slug" '
@@ -295,13 +288,6 @@ async def tts_clip(text):
     return clip
 
 
-img = Image.new("RGB", (640, 480), "white")
-ImageDraw.Draw(img).ellipse((200, 120, 440, 360), fill="red")
-buf = io.BytesIO()
-img.save(buf, "JPEG", quality=70)
-RED_JPG = buf.getvalue()
-
-
 class Mic(MediaStreamTrack):  # 20 ms frames at 48 kHz in real time; plays queued clips, else silence
     kind = "audio"
 
@@ -330,7 +316,7 @@ class Mic(MediaStreamTrack):  # 20 ms frames at 48 kHz in real time; plays queue
 
 async def main():
     q_docs = await tts_clip("ช่วยดูในเอกสารหน่อยครับ ว่าร้านกาแฟลุงจืดเปิดกี่โมง")
-    q_cam = await tts_clip("ตอนนี้ในกล้องเห็นอะไรบ้างครับ")
+    q_sum = await tts_clip("ช่วยคิดหน่อยครับ สินค้าชิ้นละห้าสิบบาท ซื้อสามชิ้น เป็นเงินเท่าไหร่")
     barge = (librosa.load(C.REF_AUDIO_PATH, sr=48000)[0][: int(1.3 * 48000)] * 32767).astype(np.int16)
     mic, pc, got, events = Mic(), RTCPeerConnection(), [], []
     pc.addTrack(mic)
@@ -380,21 +366,14 @@ async def main():
     await wait_for(lambda e: e["kind"] == "done")
     turns.append(("docs", said_end))
 
-    httpx.post(f"{BASE}/frame", content=RED_JPG, headers={"Content-Type": "image/jpeg"})
-    mic.say(q_cam)
-    said_end = time.time() + len(q_cam) / 48000
-    await wait_for(lambda e: e["kind"] == "info" and e["source"] == "camera")
-    turns.append(("camera", said_end))
+    mic.say(q_sum)
+    said_end = time.time() + len(q_sum) / 48000
+    turns.append(("sum", said_end))
     await wait_for(lambda e: e["kind"] == "bot")
     mic.say(barge)  # talk over the bot
     await wait_for(lambda e: e["kind"] == "user")
     await wait_for(lambda e: e["kind"] == "done")
 
-    for bad in ("nonsense", "thumbs_up"):  # only finger choices exist now
-        assert httpx.post(f"{BASE}/gesture", json={"webrtc_id": wid, "gesture": bad}).status_code == 400
-    httpx.post(f"{BASE}/gesture", json={"webrtc_id": wid, "gesture": "fingers_2"})
-    await wait_for(lambda e: e["kind"] == "user" and "ชู 2 นิ้ว" in e["text"])
-    await wait_for(lambda e: e["kind"] == "done")
 
     assert httpx.post(f"{BASE}/chat", json={"webrtc_id": wid, "text": "  "}).status_code == 400
     assert httpx.post(f"{BASE}/chat", json={"webrtc_id": "nobody", "text": "สวัสดี"}).status_code == 409
@@ -422,12 +401,10 @@ async def main():
     turn1 = events[greet_end:]
     first_answer = " ".join(e.get("text", "") for _, e in turn1[: [e["kind"] for _, e in turn1].index("done")] if e["kind"] in ("bot", "panel"))
     assert "เจ็ด" in first_answer or "7" in first_answer, first_answer
-    cam = [c for c in info if c["source"] == "camera"]
-    assert cam and "แดง" in cam[0]["snippet"], cam
     jobs = [e for _, e in events if e["kind"] == "team"]
     runs = {e["id"]: e["worker"] for e in jobs if e["state"] == "run"}
     assert "docs" in runs.values() and all(any(e["id"] == i and e["state"] != "run" for e in jobs) for i in runs), jobs
-    assert "boss" in team and {"web", "docs", "camera"} <= set(team["workers"]), team
+    assert "boss" in team and {"web", "docs"} <= set(team["workers"]) and "camera" not in team["workers"], team
     if "search_brain" in va.TOOLS:  # BC question: the knowledge base is searched before the brain speaks
         assert "bcbrain" in runs.values(), jobs
         brain = [c for c in info if c["source"] == "bcbrain"]  # every card names its worker; BC notes open in full
@@ -439,7 +416,7 @@ async def main():
     saved = json.load(open(os.path.join(C.SESSIONS_DIR, f"{wid}.json"), encoding="utf-8"))
     assert saved == va.SESSIONS[wid], "session file differs from the live history"
     users = [m["content"] for m in saved if m["role"] == "user"]
-    assert len(users) == 6 and users[0].startswith("(ระบบ:"), f"expected greeting, docs, camera, barge-in, gesture, chat; got {users}"
+    assert len(users) == 5 and users[0].startswith("(ระบบ:"), f"expected greeting, docs, sum, barge-in, chat; got {users}"
     print("OK turns:", users)
 
 

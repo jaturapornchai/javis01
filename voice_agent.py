@@ -1,8 +1,8 @@
 """Local real-time Thai voice assistant (phone-call style secretary).
 
-Browser (static/index.html: mic over WebRTC, camera frames, MediaPipe gestures, SVG status ring)
+Browser (static/index.html: mic over WebRTC, SVG status ring)
     -> FastRTC (Silero VAD pause detection, barge-in) -> faster-whisper Thai (STT)
-    -> DeepSeek streaming + tools (web, docs, camera, bcbrain MCP)
+    -> DeepSeek streaming + tools (web, docs, bcbrain MCP)
     -> spoken summary -> OmniVoice -> speaker;   details after [จอ] -> on-screen panel
 
 Run: python voice_agent.py   then open http://127.0.0.1:7860
@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from decimal import ROUND_HALF_UP, Decimal
 
+import aioice.ice
 import httpx
 import librosa
 import numpy as np
@@ -35,7 +36,7 @@ import ollama
 import uvicorn
 from ddgs import DDGS
 import torch  # before faster_whisper: torch's CUDA DLLs are what lets ctranslate2 find cuBLAS
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastrtc import AdditionalOutputs, ReplyOnPause, SileroVadOptions, Stream, audio_to_float32, get_current_context
 from faster_whisper import WhisperModel
@@ -61,10 +62,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 BOUNDARY = re.compile(r"\s")
 SENTENCE_END = re.compile(r"(?:ครับ|ค่ะ|คะ|[!?])\s")  # where a spoken sentence ends: one chunk = one tune
 JUNK = re.compile(r"<think>.*?</think>|[*#_`~>|\[\]{}]|^\s*[-•]\s*|[\u3040-\u30ff\u4e00-\u9fff]", re.S | re.M)
-# ponytail: keyword route. The brain sometimes describes the camera without looking (it once invented a wooden
-# table for a red circle), so these words force a look_at_camera first. Upgrade: a small classifier model.
-CAMERA_ASK = re.compile(r"กล้อง|มองเห็น|เห็นอะไร|เห็นไหม|เห็นมั้ย|ถืออะไร|นี่คืออะไร|อันนี้คืออะไร|อันนี้อะไร|ใส่เสื้อ|หน้าตาผม|หน้าตาฉัน|ดูนี่|ดูสิ|ดูซิ")
-# ponytail: same idea for things that change daily: these words force a fresh web_search before the brain speaks.
+# ponytail: keyword route. Things that change daily: these words force a fresh web_search before the brain speaks.
 # a customer's phone read back went to brain.bcsmethai.com as a search (role-play 2026-11-04): such numbers stay
 # out of the BC brain query; local docs still get them. ponytail: names still go; skip the prefetch when needed
 LONG_NUMBER = re.compile(rf"\d[\d -]{{6,}}\d|(?:(?:{'|'.join(grounding.DIGIT_WORDS)})\s*){{7,}}")  # phone, tax id, account no., in digits or read as words
@@ -273,19 +271,6 @@ def search_docs(query):
     return cards, json.dumps(found, ensure_ascii=False) if found else "ไม่พบในเอกสาร"
 
 
-def look_at_camera(question):
-    if not frame["jpg"] or time.time() - frame["t"] > 5:
-        return [], "กล้องปิดอยู่หรือยังไม่มีภาพ"
-    r = llm.chat(
-        model=C.VISION_MODEL,
-        messages=[{"role": "user", "content": f"ตอบเป็นภาษาไทยสั้นๆ เฉพาะสิ่งที่เห็นชัดในภาพ เช่น สี รูปทรง ข้อความ คน สิ่งของ ห้ามเดาว่าน่าจะเป็นอะไร ถ้าไม่ชัดให้บอกว่าไม่ชัด: {question}", "images": [frame["jpg"]]}],
-        think=False,
-        keep_alive=-1,
-    )
-    answer = r.message.content.strip()
-    return [{"source": "camera", "title": "ภาพจากกล้อง", "snippet": answer, "url": None}], answer
-
-
 CALC_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
 
 
@@ -384,13 +369,12 @@ def one_arg(name, desc):
     return {"type": "object", "properties": {name: {"type": "string", "description": desc}}, "required": [name]}
 
 
-TOOLS = {"web_search": web_search, "search_docs": search_docs, "look_at_camera": look_at_camera, "calc": calc,
+TOOLS = {"web_search": web_search, "search_docs": search_docs, "calc": calc,
          "general_knowledge": general_knowledge}
-WORKER = {"web_search": "web", "search_docs": "docs", "look_at_camera": "camera", "calc": "calc", "general_knowledge": "deepseek"}  # tool -> team member shown on screen
+WORKER = {"web_search": "web", "search_docs": "docs", "calc": "calc", "general_knowledge": "deepseek"}  # tool -> team member shown on screen
 TOOL_SPECS = [
     tool_spec("web_search", "ค้นข้อมูลจากอินเทอร์เน็ต เช่น ข่าว ราคา สภาพอากาศ หรือข้อเท็จจริงที่ไม่แน่ใจ", one_arg("query", "คำค้น")),
     tool_spec("search_docs", "ค้นเอกสารและไฟล์ของผู้ใช้ในเครื่อง", one_arg("query", "คำสำคัญสั้นๆ คั่นด้วยเว้นวรรค เช่น ร้าน เวลาเปิด")),
-    tool_spec("look_at_camera", "ดูภาพจากกล้องตอนนี้ เมื่อผู้ใช้ถามถึงสิ่งที่อยู่หน้ากล้อง ตัวเขา หรือของที่ถืออยู่", one_arg("question", "สิ่งที่อยากรู้จากภาพ")),
     tool_spec("calc", "เครื่องคิดเลข คิดตัวเลขที่ต้องคำนวณก่อนพูดทุกครั้ง เช่น ตัวอย่างที่ผู้ฟังขอ ต้นทุนถัวเฉลี่ย VAT ยอดรวม",
               one_arg("lines", "บรรทัดละหนึ่งสูตร เขียนว่า สิ่งที่คิดพร้อมหน่วย: สูตร ใช้ได้แค่ตัวเลข + - * / และวงเล็บ "
                       "เช่น รับเข้า 10 ชิ้น ชิ้นละ 50 บาท: 10*50 ตัวเลขทุกช่องของตารางรวมยอดสะสมต้องมีบรรทัดของมัน "
@@ -398,11 +382,11 @@ TOOL_SPECS = [
     tool_spec("general_knowledge", "ถามความรู้ทั่วไปที่ไม่ใช่เรื่องโปรแกรม BC ราคา หรือของบริษัท ใช้เมื่อคลังความรู้และเว็บไม่มีคำตอบเท่านั้น",
               one_arg("question", "คำถามเต็มประโยค")),
 ]
-STATUS = {"web_search": "กำลังค้นหาในอินเทอร์เน็ต", "search_docs": "กำลังค้นเอกสารในเครื่อง", "look_at_camera": "กำลังดูภาพจากกล้อง",
+STATUS = {"web_search": "กำลังค้นหาในอินเทอร์เน็ต", "search_docs": "กำลังค้นเอกสารในเครื่อง",
           "calc": "กำลังคำนวณ", "general_knowledge": "กำลังถามความรู้ทั่วไป"}
 FILLER_TEXT = {"web_search": "ขอค้นข้อมูลสักครู่นะครับ", "search_docs": "ขอเปิดดูเอกสารสักครู่นะครับ",
-               "look_at_camera": "ขอดูภาพจากกล้องสักครู่นะครับ", "": "ขอตรวจสอบข้อมูลสักครู่นะครับ"}
-FILLERS = {}  # pre-rendered at warm-up so the filler plays instantly
+               "": "ขอตรวจสอบข้อมูลสักครู่นะครับ", "hello": "สวัสดีครับ"}  # hello: no tool has that name
+FILLERS = {}  # pre-rendered at warm-up so the filler and the hello play instantly
 
 
 def brain_hits(server, text):
@@ -460,14 +444,9 @@ def run_tool(name, args, tools):
     return cards, text[: C.TOOL_RESULT_CHARS] or "ไม่พบข้อมูล"
 
 
-# ---------------------------------------------------------------- browser inputs: camera frames and gestures
-frame = {"jpg": None, "t": 0.0}  # ponytail: latest frame of the owner line's single caller; customers have no camera
-GESTURES = {  # id -> (subtitle, meaning for the LLM); only finger-count choices (ลุงจืด 2026-11-04)
-    f"fingers_{n}": (f"ชู {n} นิ้ว", f"ชู {n} นิ้ว (ระบบ: ถ้าคุณเพิ่งให้ตัวเลือกไว้ แปลว่าเลือกข้อที่ {n} ถ้าไม่ได้ให้ตัวเลือกไว้ ให้ถามสั้นๆ ว่าชู {n} นิ้วหมายถึงอะไร ห้ามเดา)") for n in range(1, 6)
-}
-# webrtc_id -> what arrived beside the audio: a gesture, typed chat, a system turn (greeting, reminder).
+# webrtc_id -> what arrived beside the audio: typed chat, a system turn (greeting, reminder).
 # ponytail: one small dict per call is never freed; clear it on hang-up if calls ever number in the hundred thousands
-PENDING = defaultdict(lambda: {"gesture": None, "t": 0.0, "text": "", "note": ""})
+PENDING = defaultdict(lambda: {"text": "", "note": ""})
 
 
 def call_id():
@@ -491,11 +470,6 @@ def take(key, empty):
     p = PENDING[call_id()]
     value, p[key] = p[key], empty
     return value
-
-
-def take_gesture():
-    g = take("gesture", None)
-    return g if g and time.time() - PENDING[call_id()]["t"] < 4 else None
 
 
 # ---------------------------------------------------------------- the call
@@ -789,8 +763,7 @@ def plain_turn(messages):
 
 
 BRAIN_DOWN = "ขอโทษครับ ตอนนี้ระบบตอบไม่ได้ชั่วคราว รบกวนถามใหม่อีกครั้งนะครับ"
-# the secretary's own fixed lines: a word a filler already said ("ขอดูภาพจากกล้อง") is no new claim when the answer
-# repeats it. The judge cut "จากภาพตอนนี้เห็นเป็นสีขาวกับวงกลมสีแดงครับ" over ภาพ though the camera saw exactly that
+# the secretary's own fixed lines: a word a filler already said is no new claim when the answer repeats it
 OWN_WORDS = "\n".join([SAY_WORDS, BRAIN_DOWN, *FILLER_TEXT.values()])
 
 
@@ -803,7 +776,7 @@ def judge(sources, piece, before):
 
     def verdict(src):
         ask = JUDGE_ASK.format(src=src, before=before[-600:] or "-", piece=piece, new=", ".join(new))
-        try:  # no num_ctx: the same options as look_at_camera, or Ollama reloads the model (~25 s)
+        try:  # no num_ctx: the same options as warm_up, or Ollama reloads the model (~25 s)
             r = llm.chat(model=C.JUDGE_MODEL, messages=[{"role": "user", "content": ask}], format=judge_format(new),
                          think=False, keep_alive=-1, options={"temperature": 0})
             words = json.loads(r.message.content)["words"]
@@ -860,7 +833,7 @@ def search_words(history, heard):
 
 
 def load_workers():
-    """Workers beyond search/docs/camera/bcbrain: Google (once google_login.py has run) and the computer."""
+    """Workers beyond search/docs/bcbrain: Google (once google_login.py has run) and the computer."""
     if google_tools.connected():
         TOOLS.update(google_tools.TOOLS)
         TOOL_SPECS.extend(google_tools.TOOL_SPECS)
@@ -880,7 +853,7 @@ def load_workers():
         WORKER["desktop_task"] = "desktop"
         C.SYSTEM_PROMPT += "\nงานบนหน้าจอคอมพิวเตอร์ เช่น ดูว่าเปิดโปรแกรมอะไรอยู่ อ่านหน้าต่าง เปิดโปรแกรม กดปุ่ม ให้ส่ง desktop_task ถ้าลูกทีมรายงานว่ารอยืนยัน ให้บอกสั้นๆ ว่าจะทำอะไร แล้วถามว่ายืนยันไหม ให้พูดว่ายืนยัน หรือชูหนึ่งนิ้ว "
     # the boss once listed an email worker that was not connected: tell it exactly who is on the team
-    names = {"web": "ค้นเว็บ", "docs": "ค้นเอกสารในเครื่อง", "camera": "ดูกล้อง", "bcbrain": "คลังความรู้บีซี", "gmail": "อ่านอีเมล",
+    names = {"web": "ค้นเว็บ", "docs": "ค้นเอกสารในเครื่อง", "bcbrain": "คลังความรู้บีซี", "gmail": "อ่านอีเมล",
              "calendar": "ดูปฏิทิน", "drive": "อ่านไฟล์ใน Google Drive", "desktop": "ดูและกดปุ่มบนคอมพิวเตอร์",
              "calc": "เครื่องคิดเลข", "deepseek": "ความรู้ทั่วไป"}
     team = sorted({names.get(WORKER.get(n, n), WORKER.get(n, n)) for n in TOOLS})
@@ -888,7 +861,7 @@ def load_workers():
     log.info("workers: %s", sorted(TOOLS))
     # the public line (javis.bcsmethai.com): the BC brain's tools and nothing else this PC has (ลุงจืด 2026-11-04);
     # its own prompt, so no owner-line setup (desktop, Google) is ever in a customer's call
-    # ลุงจืด 2026-11-08: the calculator and general knowledge too; still nothing of this PC (camera, docs, Google)
+    # ลุงจืด 2026-11-08: the calculator and general knowledge too; still nothing of this PC (docs, Google)
     PUBLIC["tools"] = {n: f for n, f in TOOLS.items() if WORKER.get(n) in ("bcbrain", "calc", "deepseek")}
     PUBLIC["specs"] = [s for s in TOOL_SPECS if s["function"]["name"] in PUBLIC["tools"]]
     pub = sorted({names[WORKER[n]] for n in PUBLIC["tools"]})
@@ -939,37 +912,34 @@ def dispatch(calls, said, turn, tools):
     return [text for _, text in results]
 
 
-def reply(audio, public=False):
+def reply(audio, public=False, hello=False):  # hello: greet() already cleared the screen and said it
     t0 = time.perf_counter()
     tools, specs, prompt = (PUBLIC["tools"], PUBLIC["specs"], PUBLIC["prompt"]) if public else (TOOLS, TOOL_SPECS, C.SYSTEM_PROMPT)
     sr, data = audio
-    heard = early_words(data) if data.size > sr * 0.3 else ""  # gesture/chat/system turns carry no audio
+    heard = early_words(data) if data.size > sr * 0.3 else ""  # chat/system turns carry no audio
     if heard is None:  # no early transcription of this speech
         heard = transcribe(audio)
     heard = " ".join(x for x in (heard, take("text", "")) if x)  # typed chat joins (or replaces) the speech
-    gesture, note = take_gesture(), take("note", "")
-    if not heard and not gesture and not note:
+    note = take("note", "")
+    if not heard and not note:
         return
-    shown = " ".join(x for x in (heard, gesture and GESTURES[gesture][0]) if x)
     sid, history = session(public)
-    log.info("USER (%.2fs): %s", time.perf_counter() - t0, masked(shown or note))
-    yield AdditionalOutputs({"kind": "user", "text": shown})  # "" for a system turn: clears the screen, no caller line
+    log.info("USER (%.2fs): %s", time.perf_counter() - t0, masked(heard or note))
+    if not hello:
+        yield AdditionalOutputs({"kind": "user", "text": heard})  # "" for a system turn: clears the screen, no caller line
 
-    asked = heard or ("(ไม่ได้พูด)" if gesture else "")
-    if gesture:
-        asked += f" (ท่าทางจากกล้อง: {GESTURES[gesture][1]})"
-    asked = f"{asked}\n{note}".strip()
+    asked = f"{heard}\n{note}".strip()
     # time rides on this turn only: keeps the system prompt + history a stable, cached KV prefix
     # date/time only when asked: the boss kept quoting the clock as a web price's "updated at" date and time, and
     # the number guard can't tell (the clock is a source); no clock in the turn = nothing to misquote
     now = asked + clock_note(heard)
-    said, screen, turn = [], [], {}
+    said, screen, turn = ([FILLER_TEXT["hello"]] if hello else []), [], {}  # the history keeps the hello too
     # the caller answers the topic ask: "ไม่ใช่ครับ ยังเรื่องเดิม" got the new topic back (eval 2026-11-08 r18); and no second ask in a row
     if was := history and TOPIC_ASK.search(history[-1]["content"]):
         now += (f"\n(ระบบ: เลขาเพิ่งถามว่าจะเปลี่ยนไปคุยเรื่อง{was[1]} หรือยังคุยเรื่อง{was[2]}ต่อ "
                 f"ถ้าผู้โทรตอบว่าเรื่องเดิม ไม่ใช่ หรือไม่เปลี่ยน คือคุยเรื่อง{was[2]}ต่อ)")
-    if "desktop_task" in tools and desktop_agent.state["pending"] and (heard or gesture):  # a held click/launch runs only on the caller's own yes
-        if (CONFIRM.search(heard) and not REFUSE.search(heard)) or gesture == "fingers_1":
+    if "desktop_task" in tools and desktop_agent.state["pending"] and heard:  # a held click/launch runs only on the caller's own yes
+        if CONFIRM.search(heard) and not REFUSE.search(heard):
             now += f"\n(ระบบ: {C.USER_NAME}ยืนยันแล้ว ผลการทำงาน: {desktop_agent.confirm() or 'หมดเวลายืนยัน ต้องสั่งใหม่'})"
         else:
             desktop_agent.state["pending"] = None
@@ -978,9 +948,7 @@ def reply(audio, public=False):
     # (ลุงจืด 2026-11-09 "ต้องแสดงตัวอย่างด้วยทุกครั้ง"). ponytail: one more boss round before the first word on
     # every BC answer; asked by how-words only, "แล้วต้นทุนแบบไฟโฟล่ะ" got no calc and every example row was cut
     read = False
-    if "look_at_camera" in tools and CAMERA_ASK.search(heard):  # see first, so the answer can only come from the real frame
-        now += f"\n(ผลจาก look_at_camera ตอนนี้: {(yield from dispatch([('look_at_camera', {'question': heard})], said, turn, tools))[0]})"
-    elif "web_search" in tools and LATEST_ASK.search(heard):  # changes daily: only a fresh search may answer it
+    if "web_search" in tools and LATEST_ASK.search(heard):  # changes daily: only a fresh search may answer it
         now += f"\n(ผลจาก web_search ตอนนี้: {(yield from dispatch([('web_search', {'query': heard})], said, turn, tools))[0]})"
     elif heard and (wording := search_words(history, heard))[1] and not was:  # off the topic, maybe misheard: ask, search nothing
         topic, new = wording[1]
@@ -1052,6 +1020,9 @@ def reply(audio, public=False):
                     if not said and text == "ขอโทษครับ":
                         log.info("dropped a bare opener: ขอโทษครับ")
                         continue
+                    # told the hello was said, the boss still opened with it 9 of 9 calls (eval 2026-11-09), or with a bare ครับ
+                    if said == [FILLER_TEXT["hello"]] and not (text := re.sub(r"^(?:สวัสดี)?\s*(?:ครับ|ค่ะ)?\s*", "", text)):
+                        continue
                     got = time.perf_counter()
                     # ห้ามแต่ง: a phrase with an unsourced number or fact is dropped; one line at the end says so
                     if bad := grounding.unsourced(text, known):
@@ -1109,8 +1080,12 @@ brief = {"day": None}  # today's brief (calendar + unread mail) is given on the 
 def greet(*_, public=False):
     """startup_fn: runs when a call connects. A short hello, plus today's brief once a day if Google is linked
     (owner line only: the public line has no Google tools)."""
-    back = "ผู้โทรคนนี้เคยคุยกันแล้ว ทักให้เหมาะกับคนนั้นตามบทสนทนาก่อนหน้า " if session(public)[1] else ""
-    note = (f"(ระบบ: มีสายเข้า ทักสั้นๆ ว่าเป็นเลขาของ{C.USER_NAME} แล้วถามว่าให้ช่วยอะไร {back}"
+    # ลุงจืด 2026-11-09 "เข้ามาครั้งแรก ต้องคุยเลย": the boss + voice took ~3 s to the first word; this plays at once
+    yield AdditionalOutputs({"kind": "user", "text": ""})  # clears the screen, no caller line
+    yield (C.TTS_SAMPLE_RATE, FILLERS["hello"]), AdditionalOutputs({"kind": "bot", "text": FILLER_TEXT["hello"]})
+    back = "ผู้โทรคนนี้เคยคุยกันแล้ว พูดต่อให้เหมาะกับคนนั้นตามบทสนทนาก่อนหน้า " if session(public)[1] else ""
+    note = (f"(ระบบ: มีสายเข้า เลขาพูดว่า{FILLER_TEXT['hello']}ไปแล้ว ห้ามทักซ้ำ "
+            f"บอกสั้นๆ ว่าเป็นเลขาของ{C.USER_NAME} แล้วถามว่าให้ช่วยอะไร {back}"
             "ห้ามพูดเรื่องอากาศ ข่าว หรือข้อเท็จจริงใดที่ไม่ได้มาจากผลค้น")  # it once invented sunny weather in a hello
     # ponytail: on the owner line the brief goes to whoever calls first that day (127.0.0.1 only)
     if not public and "calendar_events" in TOOLS and brief["day"] != datetime.date.today():
@@ -1119,7 +1094,7 @@ def greet(*_, public=False):
                                         [], {"filled": True}, TOOLS)  # no "please wait" before hello
         note += f" แล้วสรุปงานวันนี้สั้นๆ จากนัดหมาย: {cal} และอีเมลที่ยังไม่อ่าน: {mail} รายละเอียดใส่หลัง {C.SCREEN_MARK}"
     PENDING[call_id()]["note"] = note + ")"
-    yield from reply((16000, np.zeros(0, dtype=np.float32)), public)
+    yield from reply((16000, np.zeros(0, dtype=np.float32)), public, hello=True)
 
 
 # fastrtc waits for extra UI inputs when the reply fn takes more than one parameter (reply_on_pause.py
@@ -1276,10 +1251,10 @@ class BargeInReplyOnPause(ReplyOnPause):
         return False
 
     def push_turn(self, interrupt):
-        """Start a reply with no speech (gesture, typed chat, system note), like receive() does on a pause; `interrupt` also cuts the bot off."""
+        """Start a reply with no speech (typed chat, system note), like receive() does on a pause; `interrupt` also cuts the bot off."""
         if self.state.responding:
             if not interrupt:
-                return  # a mid-reply finger choice rides along with the caller's next turn
+                return  # a mid-reply system note rides along with the caller's next turn
             self._close_generator()
             self.generator = None
         self.clear_queue()
@@ -1295,8 +1270,9 @@ def make_stream(public=False):
         model_options=SileroVadOptions(min_speech_duration_ms=C.VAD_MIN_SPEECH_MS, min_silence_duration_ms=100, speech_pad_ms=0),
         output_sample_rate=C.TTS_SAMPLE_RATE,
     )
-    if not public:
-        return Stream(handler, modality="audio", mode="send-receive", concurrency_limit=1)
+    if not public:  # 127.0.0.1 only: host candidates are enough, and no STUN means no wait for one
+        return Stream(handler, modality="audio", mode="send-receive", concurrency_limit=1,
+                      server_rtc_configuration={"iceServers": []})
     # this PC sits behind NAT: STUN gives it a public address the customer's TURN relay can reach (the browser
     # gets TURN from /ice); calls are capped in number and length
     stun = {"iceServers": [{"urls": f"stun:{C.TURN_HOST}:3478"}]} if C.TURN_HOST else None
@@ -1304,12 +1280,20 @@ def make_stream(public=False):
                   time_limit=C.PUBLIC_CALL_SECS, server_rtc_configuration=stun)
 
 
+# ลุงจืด 2026-11-09 "เข้ามาครั้งแรก ต้องคุยเลย": before it answers an offer, aioice asks STUN from every network
+# adapter and waits for all of them up to 5 s. Two adapters here never get a reply, so every call waited 5.0 s;
+# the adapter that works answers in ~0.05 s.
+# ponytail: 1 s keeps one STUN retry (aioice resends at 0.5 s); a slower link loses the server's public candidate
+# and customers behind NAT cannot connect. Then raise this or drop the dead adapters.
+aioice.ice.Connection.get_component_candidates.__defaults__ = (1,)
+
+
 def ice_servers():
     """TURN for the customer's browser, as coturn's use-auth-secret expects: the user name is an expiry time and
     the password its HMAC with the shared secret, so nothing long-lived ever reaches a browser."""
     if not (C.TURN_HOST and C.TURN_SECRET):
         return {"iceServers": []}
-    user = f"{int(time.time()) + 3600}:javis"
+    user = f"{int(time.time()) + 3600}:javis-{os.urandom(4).hex()}"  # coturn counts user-quota per name after ":", so one per /ice
     key = base64.b64encode(hmac.new(C.TURN_SECRET.encode(), user.encode(), hashlib.sha1).digest()).decode()
     return {"iceServers": [{"urls": f"stun:{C.TURN_HOST}:3478"},
                            {"urls": [f"turn:{C.TURN_HOST}:3478?transport=udp", f"turn:{C.TURN_HOST}:3478?transport=tcp"],
@@ -1332,7 +1316,7 @@ def make_app(stream, public=False):
     def index():
         return FileResponse(os.path.join(C.BASE_DIR, "static", "index.html"))
 
-    @app.get("/team")  # who is on the team right now; the page turns the camera on only if "camera" is listed
+    @app.get("/team")  # who is on the team right now
     def team():
         return {"boss": C.DEEPSEEK_MODEL, "workers": sorted(set(WORKER.get(n, "other") for n in tools))}
 
@@ -1370,26 +1354,6 @@ def make_app(stream, public=False):
 
     if public:
         app.get("/ice")(ice_servers)
-        return app  # no camera, no gestures on the public line
-
-    @app.post("/frame")  # latest camera JPEG, ~1 per second
-    async def post_frame(request: Request):
-        body = await request.body()
-        if len(body) > 2_000_000 or not body.startswith(b"\xff\xd8"):
-            return JSONResponse({"error": "expected a JPEG under 2 MB"}, status_code=400)
-        frame.update(jpg=body, t=time.time())
-        return {"ok": True}
-
-    @app.post("/gesture")
-    async def post_gesture(body: dict):
-        gesture, call = body.get("gesture"), str(body.get("webrtc_id"))
-        if gesture not in GESTURES:
-            return JSONResponse({"error": "unknown gesture"}, status_code=400)
-        PENDING[call].update(gesture=gesture, t=time.time())
-        handler = stream.handlers.get(call)
-        if handler and not handler.state.started_talking:  # mid-speech gestures ride along with that turn
-            handler.push_turn(interrupt=False)
-        return {"ok": True}
 
     return app
 
@@ -1418,7 +1382,7 @@ if __name__ == "__main__":
     stt = load_stt()
     if not C.DEEPSEEK_API_KEY:
         raise SystemExit("DEEPSEEK_API_KEY is not set: put it in .env (the boss runs on DeepSeek)")
-    llm = ollama.Client(host=C.OLLAMA_HOST)  # the camera and the judge (VISION_MODEL)
+    llm = ollama.Client(host=C.OLLAMA_HOST)  # the judge (VISION_MODEL)
     tts = load_tts()
     load_mcp_tools()
     load_workers()

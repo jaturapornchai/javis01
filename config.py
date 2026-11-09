@@ -27,14 +27,14 @@ STT_LANGUAGE = "th"
 STT_BEAM_SIZE = 1
 STT_VAD_PARAMS = dict(min_silence_duration_ms=400)
 
-# --- LLMs: the boss on DeepSeek; the camera and the judge in Ollama ---
+# --- LLMs: the boss on DeepSeek; the judge in Ollama ---
 # 127.0.0.1, not localhost: on Windows "localhost" tries ::1 first and every new connection waits ~2 s
 OLLAMA_HOST = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3-vl:8b-instruct")  # answers look_at_camera
+VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3-vl:8b-instruct")  # the judge's model (JUDGE_MODEL)
 # The boss (talks, picks the workers) and the computer worker run on DeepSeek only (ลุงจืด 2026-11-04). The local
 # Typhoon 30B-A3B fallback is gone: mostly on CPU it took up to 17 s and lost the thread, and it held GPU memory
 # beside STT, TTS and the vision model. DeepSeek down -> the caller hears an apology, never a guess.
-# STT, TTS, the camera and the judge always stay local.
+# STT, TTS and the judge always stay local.
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
@@ -44,7 +44,7 @@ LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 HISTORY_TURNS = 10  # user+assistant pairs kept per caller session
 SESSIONS_DIR = os.path.join(BASE_DIR, "sessions")  # one <session id>.json per browser, so calls go on where they left off
 # ห้ามแต่งเรื่อง: checks every spoken phrase and screen line against this turn's sources (numbers: grounding.py).
-# The vision model is already on the GPU for the camera, so the judge loads nothing new.
+# ponytail: VISION_MODEL keeps the camera worker's old name: .env files set it
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", VISION_MODEL)
 JUDGE_MAX_CHARS = int(os.environ.get("JUDGE_MAX_CHARS", "6000"))  # source tail it reads; its context is 4K tokens
 
@@ -145,7 +145,7 @@ SYSTEM_PROMPT = (
     # a plain "สวัสดีครับ" once got "วันนี้อากาศดีจังเลยนะครับ"; a bare "no facts in small talk" then made it
     # volunteer the Google status or say "ไม่รู้ครับ" to a hello, so say what to do instead
     "ถ้าผู้โทรแค่ทักทาย ให้ทักกลับสั้นๆ แล้วถามว่าให้ช่วยอะไร ห้ามเติมเรื่องอื่น เช่น อากาศ ข่าว หรือสถานะระบบ "
-    "ข้อเท็จจริงห้ามคาดเดาด้วยคำว่า น่าจะ คงจะ อาจจะ การเดาใจลูกค้าให้ถามเป็นคำถามเท่านั้น ห้ามพูดเหมือนรู้แล้ว และห้ามเดาเจตนาหรือเรื่องส่วนตัวของผู้โทรจากสิ่งที่เห็นบนจอหรือกล้อง "
+    "ข้อเท็จจริงห้ามคาดเดาด้วยคำว่า น่าจะ คงจะ อาจจะ การเดาใจลูกค้าให้ถามเป็นคำถามเท่านั้น ห้ามพูดเหมือนรู้แล้ว และห้ามเดาเจตนาหรือเรื่องส่วนตัวของผู้โทรจากสิ่งที่เห็นบนจอ "
     "เวลาตอนนี้ที่ระบบบอกคือเวลานาฬิกา ไม่ใช่เวลาอัปเดตของข้อมูล บอกเวลาอัปเดตได้เฉพาะเมื่อแหล่งข้อมูลระบุไว้ ตัวเลขต้องบอกหน่วยและสกุลเงินตามที่แหล่งเขียนไว้เท่านั้น ห้ามแปลงหรือใส่หน่วยเอง ห้ามบอกว่ากำลังทำหรือทำแล้ว ถ้ายังไม่ได้สั่งลูกทีมจริง "
     "คำตอบที่เป็นข้อมูลต้องบอกแหล่งสั้นๆ ในคำพูด เช่น จากคลังความรู้บีซี หรือจากเว็บ บอกครั้งแรกที่เล่าเรื่องนั้นพอ ไม่ต้องพูดซ้ำทุกคำตอบ "
     # "flag 45" told as "ธงสี่ห้า" was cut: the checker matches the sources' own words
@@ -163,9 +163,6 @@ SYSTEM_PROMPT = (
     "ส่วนคำพูดห้ามมีสูตร สมการ หรือเครื่องหมายคำนวณ ให้เล่าเป็นภาษาพูดง่ายๆ ถ้าจำเป็นให้ใส่สูตรหลัง [จอ] "
     "ข่าว ราคา หรือข้อมูลล่าสุดใช้ web_search เอกสารในเครื่องใช้ search_docs "
     "ระบบ BC Ai Account บัญชี ภาษี เมนูของระบบ ใช้ search_brain read_note หรือ ask_brain "
-    "คุณมองไม่เห็นภาพเอง ถ้าถามถึงสิ่งที่อยู่หน้ากล้อง ตัวผู้ใช้ หรือของที่ถืออยู่ ต้องใช้ look_at_camera "
-    "หรือผลจาก look_at_camera ที่ให้มาเท่านั้น ห้ามบรรยายภาพเอง "
-    "ผู้ใช้อาจเลือกข้อด้วยการชูนิ้ว 1 ถึง 5 ผ่านกล้อง ให้ตีความตามตัวเลือกที่คุณเพิ่งให้ไว้ ถ้าไม่ได้ให้ตัวเลือกไว้ให้ถามว่าหมายถึงอะไร ห้ามเดา "
     # ลุงจืด 2026-11-04 "เสียงมีหลายคนพูด": the mic hears the room too ("คุณต่าย คุณต่าย คุณต่าย" got an answer)
     "ไมค์อาจได้ยินคนอื่นในห้องคุยกันเอง คำทักทาย ขอบคุณ ลา คำถาม คำสั่ง และคำตอบของสิ่งที่คุณเพิ่งถาม ถือว่าพูดกับคุณ ให้ตอบตามปกติ "
     # "ขอบคุณครับ" came back silent in the replay, and "if unsure answer" made it answer the room again
@@ -215,7 +212,7 @@ SERVER_PORT = int(os.environ.get("PORT", "7860"))
 
 # --- Public line for customers (javis.bcsmethai.com, ลุงจืด 2026-11-04) ---
 # A second port in the same process: only the SSH tunnel reaches it, and calls on it get the BC brain and nothing
-# else (no desktop, docs, Google, camera, web), set in code. The owner line above stays 127.0.0.1 only.
+# else (no desktop, docs, Google, web), set in code. The owner line above stays 127.0.0.1 only.
 PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", "7861"))
 PUBLIC_CALLS = int(os.environ.get("PUBLIC_CALLS", "3"))  # customers at once: one GPU, DeepSeek cost
 PUBLIC_CALL_SECS = int(os.environ.get("PUBLIC_CALL_SECS", "600"))  # a customer call hangs up after this

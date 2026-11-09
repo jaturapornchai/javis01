@@ -58,8 +58,6 @@ button,summary{font:inherit;color:inherit}
 #teamlist .tk:empty{display:none}
 #teamlist .boss .nm{color:#67e8f9}
 @keyframes pulse{50%{transform:scale(1.45)}}
-#lg ul{list-style:none;margin:6px 0 0;padding:0;font-size:13px;line-height:1.7;max-height:34vh;overflow-y:auto}
-#lg li span{display:inline-block;width:2.2em}
 #tr summary,#team summary{cursor:pointer;height:28px;line-height:28px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #trlist{list-style:none;margin:8px 0 0;padding:0;overflow-y:auto;flex:1;font-size:14px;line-height:1.5}
 #trlist li{margin-bottom:6px}
@@ -74,7 +72,7 @@ button,summary{font:inherit;color:inherit}
 a.card:hover{border-color:#a78bfa;background:rgba(30,27,75,.7)}
 @keyframes cin{from{opacity:0;transform:translateX(60px) rotateY(-28deg)}to{opacity:1;transform:none}}
 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;color:#05070f;font-weight:600}
-.badge.web{background:#60a5fa}.badge.docs{background:#4ade80}.badge.camera{background:#f472b6}.badge.bcbrain{background:#fb923c}.badge.gmail{background:#f87171}.badge.calendar{background:#a78bfa}.badge.drive{background:#facc15}.badge.desktop{background:#2dd4bf}.badge.calc{background:#e879f9}.badge.deepseek{background:#818cf8}.badge.other{background:#9ca3af}
+.badge.web{background:#60a5fa}.badge.docs{background:#4ade80}.badge.bcbrain{background:#fb923c}.badge.gmail{background:#f87171}.badge.calendar{background:#a78bfa}.badge.drive{background:#facc15}.badge.desktop{background:#2dd4bf}.badge.calc{background:#e879f9}.badge.deepseek{background:#818cf8}.badge.other{background:#9ca3af}
 .card h3{margin:4px 0 2px;font-size:14px;line-height:1.35}
 .card p{margin:0;font-size:12.5px;line-height:1.45;color:#c3cbe0;display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 
@@ -101,11 +99,6 @@ a.card:hover{border-color:#a78bfa;background:rgba(30,27,75,.7)}
 #bot{font-size:30px;line-height:1.4;color:#fff;max-height:4.3em;overflow:hidden;text-shadow:0 2px 8px #000}
 #bot span{animation:sin .5s ease-out both}
 @keyframes sin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-
-#cam{margin:0;position:fixed;left:16px;bottom:16px;width:220px;z-index:4;overflow:hidden;padding:0}
-#cam[hidden]{display:none}
-#cam video{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;transform:scaleX(-1);background:#000}
-#cam b{position:absolute;left:8px;top:6px;font-size:12px;background:rgba(0,0,0,.55);padding:1px 8px;border-radius:8px}
 
 /* panel mode, always on (ลุงจืด 2026-11-04 "เน้นแสดงข้อมูลแน่นๆ"): the info panel fills the screen, the HUD floats over it */
 #panel{position:fixed;left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);top:72px;bottom:184px;z-index:3;display:flex;flex-direction:column;padding:12px 18px;animation:pin .5s ease both}
@@ -155,11 +148,6 @@ body.panel #subs{left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);width:
 body.panel #chat{left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);width:auto;min-width:0;transform:none}
 body.panel #bot{font-size:22px;max-height:2.9em}
 body.panel #user{font-size:15px}
-#toast{position:fixed;left:50%;top:30%;transform:translateX(-50%);z-index:4;pointer-events:none}
-.gt{display:flex;flex-direction:column;align-items:center;gap:6px;text-shadow:0 2px 10px #000;animation:gt 2s ease both}
-.gt .emo{font-size:72px;line-height:1.1}
-.gt .lbl{font-size:22px;line-height:1.3;padding:4px 16px;background:rgba(5,7,15,.7);border-radius:16px}
-@keyframes gt{0%{opacity:0;transform:scale(.4)}15%{opacity:1;transform:scale(1.15)}25%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:scale(.9)}}
 @media (max-width:900px){
   /* phone: HUD top right, panel in the middle, a row of cards above the subtitles and the chat bar */
   #top{gap:6px;padding:12px 8px}#top h1{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}#top .btn{padding:0 12px;white-space:nowrap}
@@ -169,7 +157,7 @@ body.panel #user{font-size:15px}
   body.panel #chat{left:8px;right:8px}
   #cards{top:auto;bottom:64px;left:8px;right:8px;width:auto;height:118px;flex-direction:row;overflow:auto hidden}
   .turn{flex-direction:row}.turn>h4{display:none}.card{flex:0 0 72vw}
-  #cam{width:44vw;bottom:72px}#top .hint{display:none}#left{display:none}
+  #top .hint{display:none}#left{display:none}
 }
 @media (prefers-reduced-motion:reduce){#teamlist .dot,.card,#bot span,.gt,#panel,.md .fi,.md .flow li,.md tr.in,.md tr.in td{animation:none}}
 </style>
@@ -179,17 +167,15 @@ body.panel #user{font-size:15px}
   <h1>ผู้ช่วยเสียงภาษาไทย</h1>
   <span class="hint">ควรใส่หูฟัง</span>
   <details id="dev">
-    <summary class="btn" aria-label="เลือกไมค์ กล้อง และลำโพง">อุปกรณ์</summary>
+    <summary class="btn" aria-label="เลือกไมค์และลำโพง">อุปกรณ์</summary>
     <div class="glass">
       <div class="f"><label for="micSel">ไมค์ (ลองพูด แถบต้องขยับ)</label><select id="micSel"></select>
         <meter id="micLvl" min="0" max="1" value="0" aria-label="ระดับเสียงไมค์"></meter></div>
-      <div class="f"><label for="camSel">กล้อง</label><select id="camSel"></select></div>
       <div class="f"><label for="spkSel">ลำโพง</label>
         <div class="row"><select id="spkSel"></select><button id="spkTest" class="btn" type="button">ทดสอบเสียง</button></div></div>
     </div>
   </details>
   <button id="micBtn" class="btn" type="button" disabled aria-label="เปิดหรือปิดไมค์" aria-pressed="false">ปิดไมค์</button>
-  <button id="camBtn" class="btn" type="button" disabled aria-label="เปิดหรือปิดกล้อง">ปิดกล้อง</button>
   <button id="callBtn" class="btn primary" type="button">เริ่มคุย</button>
 </header>
 <div id="note" class="glass" role="status" aria-live="polite"></div>
@@ -202,12 +188,7 @@ body.panel #user{font-size:15px}
   <summary>บทสนทนา</summary>
   <ul id="trlist"></ul>
 </details>
-<details id="lg" class="glass">
-  <summary>ท่าทางที่ใช้ได้</summary>
-  <ul id="lglist"></ul>
-</details>
 </div>
-<div id="toast"></div>
 <div id="hud" data-s="idle" title="ลากเพื่อย้าย · ลากมุมขวาล่างเพื่อย่อขยาย · ดับเบิลคลิกเพื่อคืนที่เดิม">
 <svg viewBox="-100 -100 200 200" fill="none" stroke="currentColor" aria-hidden="true">
 <g id="r1"><circle r="97" stroke-width="5" stroke-dasharray="0.8 4.28" opacity=".45"/><circle r="96" stroke-width="9" stroke-dasharray="1 24.13" opacity=".9"/></g>
@@ -223,35 +204,21 @@ body.panel #user{font-size:15px}
 <div id="cards" aria-label="ข้อมูลที่เกี่ยวข้อง"></div>
 <div id="subs" aria-live="polite"><div id="user"></div><div id="bot"></div></div>
 <form id="chat" class="glass" autocomplete="off"><input id="chatIn" maxlength="500" placeholder="พิมพ์ถามแทนการพูด แล้วกด Enter" aria-label="พิมพ์ข้อความถึงผู้ช่วย"><button class="btn primary" type="submit">ส่ง</button></form>
-<figure id="cam" class="glass" hidden><video id="camVideo" autoplay muted playsinline></video><b>กล้อง</b></figure>
 <audio id="remote" autoplay hidden></audio>
 
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const demo = new URLSearchParams(location.search).get("demo") === "1";
-const MP_VER = "1.2.2"; // pinned @mediapipe/tasks-vision
-const MP_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@" + MP_VER;
-const MP_MODELS = "https://storage.googleapis.com/mediapipe-models/";
-const GESTURE_MODEL = MP_MODELS + "gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task";
-const G = {
-  TICK_MS: 100,        // ~10 fps detection
-  HOLD_FINGERS_MS: 800,
-  COOLDOWN_MS: 2500,   // after any sent gesture
-};
-const GESTURES = { // only finger-count choices (ลุงจืด 2026-11-04); name: [emoji, Thai label, how to]
-  fingers_1: ["☝️", "เลือกข้อ 1", "ชูนิ้ว 1"], fingers_2: ["✌️", "เลือกข้อ 2", "ชูนิ้ว 2"], fingers_3: ["3️⃣", "เลือกข้อ 3", "ชูนิ้ว 3"],
-  fingers_4: ["4️⃣", "เลือกข้อ 4", "ชูนิ้ว 4"], fingers_5: ["🖐️", "เลือกข้อ 5", "แบมือ 5 นิ้ว"],
-};
 const LABEL = { idle: "พร้อมคุย", listening: "กำลังฟัง…", thinking: "กำลังคิด…", searching: "กำลังคิด…", speaking: "กำลังพูด…" };
 const SPIN = { idle: 0.15, listening: 0.3, thinking: 1.2, searching: 1.2, speaking: 0.5 }; // the HUD's spin per state, its color is CSS
-const SRC = { web: ["เว็บ", 0x60a5fa], docs: ["เอกสารในเครื่อง", 0x4ade80], camera: ["กล้อง", 0xf472b6], bcbrain: ["คลังความรู้ BC", 0xfb923c],
+const SRC = { web: ["เว็บ", 0x60a5fa], docs: ["เอกสารในเครื่อง", 0x4ade80], bcbrain: ["คลังความรู้ BC", 0xfb923c],
   gmail: ["อีเมล", 0xf87171], calendar: ["ปฏิทิน", 0xa78bfa], drive: ["Google Drive", 0xfacc15], desktop: ["คอมพิวเตอร์", 0x2dd4bf],
   calc: ["เครื่องคิดเลข", 0xe879f9], deepseek: ["ความรู้ทั่วไป", 0x818cf8] };
 const OTHER_COLOR = 0x9ca3af; // any source string not in SRC
 
 let state = "idle", statusText = "", userLevel = 0, botLevel = 0, panelText = "", panelBlocks = 0;
-const ui = { call: $("callBtn"), mic: $("micBtn"), cam: $("camBtn"), pill: $("pill"), user: $("user"), bot: $("bot"), cards: $("cards"), list: $("trlist"), note: $("note") };
+const ui = { call: $("callBtn"), mic: $("micBtn"), pill: $("pill"), user: $("user"), bot: $("bot"), cards: $("cards"), list: $("trlist"), note: $("note") };
 
 /* ---------- UI state ---------- */
 function render() { ui.pill.textContent = statusText || LABEL[state]; }
@@ -300,7 +267,6 @@ function onLog(msg) {
 
 /* ---------- team panel: the boss (LLM) and the workers it hands jobs to, live ---------- */
 const BOSS = { idle: "ว่าง รอคำสั่ง", listening: "กำลังฟัง", thinking: "กำลังคิดว่าจะให้ใครทำอะไร", searching: "แจกงานแล้ว รอลูกทีม", speaking: "กำลังสรุปให้ฟัง" };
-let camOK = false; // set from /team: true only where the camera worker exists (owner line)
 const team = { rows: {}, jobs: {}, found: {}, boss: null }; // rows: member -> {li, st, tk, run: Set of job ids, t0}; jobs: job id -> member; found: job id -> cards
 const hex = (n) => "#" + n.toString(16).padStart(6, "0");
 function teamRow(key) {
@@ -315,7 +281,7 @@ function teamRow(key) {
 function initTeam() {
   team.boss = teamRow("boss");
   return fetch("/team").then((r) => r.json()).then(({ boss, workers }) => {
-    team.boss.tk.textContent = boss; camOK = workers.includes("camera"); // the public line has no camera: never ask for it
+    team.boss.tk.textContent = boss;
     for (const w of workers) if (!team.rows[w]) teamRow(w);
     teamCount();
   }).catch(() => {}); // older server: members appear when they get their first job
@@ -445,7 +411,7 @@ let userMeter = null, botMeter = null;
 setInterval(() => { if (userMeter) userLevel = userMeter(); if (botMeter) botLevel = botMeter(); }, 40);
 
 /* ---------- call ---------- */
-let pc = null, es = null, stream = null, frameTimer = null, inflight = false, camOn = false, micOn = true, webrtcId = "", demoTimers = [];
+let pc = null, es = null, stream = null, micOn = true, webrtcId = "", demoTimers = [];
 
 // ลุงจืด 2026-11-07 "เพิ่มปุ่ม ปิด/เปิด mic": an off mic sends silence, so the call stays up and the secretary hears no turn
 function setMic(on) {
@@ -454,16 +420,10 @@ function setMic(on) {
 }
 ui.mic.onclick = () => setMic(!micOn);
 
-function showCam(on) {
-  camOn = on; $("cam").hidden = !on; ui.cam.textContent = on ? "ปิดกล้อง" : "เปิดกล้อง";
-  stream?.getVideoTracks().forEach((t) => (t.enabled = on));
-}
-ui.cam.onclick = () => showCam(!camOn);
-
-/* ---------- devices: mic / camera / speaker; choice kept in localStorage, switchable mid-call ---------- */
-const MIC = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, CAM = { width: 640, height: 480 };
-const sel = { audioinput: $("micSel"), videoinput: $("camSel"), audiooutput: $("spkSel") };
-const KIND_NAME = { audioinput: "ไมค์", videoinput: "กล้อง", audiooutput: "ลำโพง" };
+/* ---------- devices: mic / speaker; choice kept in localStorage, switchable mid-call ---------- */
+const MIC = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+const sel = { audioinput: $("micSel"), audiooutput: $("spkSel") };
+const KIND_NAME = { audioinput: "ไมค์", audiooutput: "ลำโพง" };
 const canSink = "setSinkId" in HTMLMediaElement.prototype;
 const pick = (kind) => (sel[kind].value ? { deviceId: { exact: sel[kind].value } } : {});
 
@@ -472,7 +432,7 @@ async function listDevices() {
   for (const [kind, s] of Object.entries(sel)) {
     const keep = s.value || localStorage.getItem("dev." + kind) || "";
     s.replaceChildren(new Option(kind === "audiooutput" && !canSink ? "ลำโพงของระบบ (เบราว์เซอร์นี้เลือกไม่ได้)" : "ค่าเริ่มต้นของระบบ", ""));
-    // ids are blank until mic/camera permission is granted; "default" duplicates the first option
+    // ids are blank until mic permission is granted; "default" duplicates the first option
     devs.filter((d) => d.kind === kind && d.deviceId && d.deviceId !== "default")
       .forEach((d, i) => s.add(new Option(d.label || `${KIND_NAME[kind]} ${i + 1}`, d.deviceId)));
     s.value = [...s.options].some((o) => o.value === keep) ? keep : "";
@@ -483,14 +443,11 @@ async function listDevices() {
 async function switchDevice(kind) {
   if (kind === "audiooutput") return canSink && $("remote").setSinkId(sel.audiooutput.value);
   if (!stream) return; // used when the next call starts
-  const isMic = kind === "audioinput";
-  const track = (await navigator.mediaDevices.getUserMedia(isMic ? { audio: { ...MIC, ...pick(kind) } } : { video: { ...CAM, ...pick(kind) } })).getTracks()[0];
-  if (isMic) track.enabled = micOn; // a new mic picked while off stays off
-  const old = isMic ? stream.getAudioTracks() : stream.getVideoTracks();
-  if (isMic) { await pc?.getSenders().find((x) => x.track?.kind === "audio")?.replaceTrack(track); userMeter = analyser(new MediaStream([track])); }
-  old.forEach((t) => { t.stop(); stream.removeTrack(t); });
+  const track = (await navigator.mediaDevices.getUserMedia({ audio: { ...MIC, ...pick(kind) } })).getTracks()[0];
+  track.enabled = micOn; // a new mic picked while off stays off
+  await pc?.getSenders().find((x) => x.track?.kind === "audio")?.replaceTrack(track); userMeter = analyser(new MediaStream([track]));
+  stream.getAudioTracks().forEach((t) => { t.stop(); stream.removeTrack(t); });
   stream.addTrack(track);
-  if (!isMic) { $("camVideo").srcObject = new MediaStream([track]); showCam(true); ui.cam.disabled = false; }
 }
 
 /* mic test: level meter while the picker is open (the call's own mic during a call, else a temporary one) */
@@ -532,9 +489,9 @@ $("dev").addEventListener("toggle", async (e) => {
   if (!e.target.open) return micTest(false);
   if (!stream && sel.audioinput.options.length <= 1) {
     try { // ask once so the lists show real device names before the first call
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: camOK }).catch(() => navigator.mediaDevices.getUserMedia({ audio: true }));
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
       s.getTracks().forEach((t) => t.stop());
-    } catch { notice("ยังไม่ได้อนุญาตให้ใช้ไมค์หรือกล้อง"); }
+    } catch { notice("ยังไม่ได้อนุญาตให้ใช้ไมค์"); }
     await listDevices();
   }
   await micTest(true).catch(() => notice("เปิดไมค์ไม่ได้"));
@@ -554,28 +511,11 @@ $("chat").onsubmit = (e) => {
     .then((r) => r.ok || notice("ส่งข้อความไม่สำเร็จ")).catch(() => notice("ส่งข้อความไม่สำเร็จ"));
 };
 
-function sendFrame() {
-  const v = $("camVideo");
-  if (inflight || !camOn || !v.videoWidth) return;
-  const c = document.createElement("canvas"), k = Math.min(1, 640 / v.videoWidth);
-  c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
-  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
-  inflight = true;
-  c.toBlob((b) => {
-    if (!b) { inflight = false; return; }
-    fetch(`/frame?webrtc_id=${webrtcId}`, { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: b })
-      .catch(() => {}).finally(() => (inflight = false));
-  }, "image/jpeg", 0.7);
-}
-
 async function start() {
   ui.call.disabled = true; notice(""); micTest(false); // the call takes over the mic (and the meter)
   try {
     const audio = { ...MIC, ...pick("audioinput") };
-    if (!camOK) stream = await navigator.mediaDevices.getUserMedia({ audio });
-    else try { stream = await navigator.mediaDevices.getUserMedia({ audio, video: { ...CAM, ...pick("videoinput") } }); }
-    catch { stream = await navigator.mediaDevices.getUserMedia({ audio }); notice("ใช้กล้องไม่ได้ จะคุยด้วยเสียงอย่างเดียว"); }
-    if (stream.getVideoTracks().length) { $("camVideo").srcObject = stream; showCam(true); ui.cam.disabled = false; }
+    stream = await navigator.mediaDevices.getUserMedia({ audio });
     setMic(true); ui.mic.disabled = false;
     userMeter = analyser(stream);
     await listDevices(); switchDevice("audiooutput").catch(() => notice("เลือกลำโพงไม่ได้ ใช้ลำโพงของระบบแทน"));
@@ -586,7 +526,7 @@ async function start() {
     webrtcId = localStorage.getItem("session") + "_" + hex(5);
     // TURN for callers behind NAT (public line only; the owner page on 127.0.0.1 gets a 404 and needs none)
     pc = new RTCPeerConnection(await fetch("/ice").then((r) => (r.ok ? r.json() : {})).catch(() => ({})));
-    stream.getAudioTracks().forEach((t) => pc.addTrack(t, stream)); // video goes via /frame, not WebRTC
+    stream.getAudioTracks().forEach((t) => pc.addTrack(t, stream));
     pc.createDataChannel("text").onmessage = (e) => {
       try { const m = JSON.parse(e.data); if (m.type === "log") onLog(m.data); } catch { /* ignore non-JSON */ }
     };
@@ -611,7 +551,6 @@ async function start() {
 
     es = new EventSource(`/outputs?webrtc_id=${webrtcId}`);
     es.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch { /* ignore bad event */ } };
-    frameTimer = setInterval(sendFrame, 1000);
     setState("listening");
     ui.call.textContent = "วางสาย"; ui.call.className = "btn danger"; ui.call.disabled = false;
   } catch (e) {
@@ -624,10 +563,9 @@ async function start() {
 function hangup() {
   es?.close(); es = null; pc?.close(); pc = null;
   stream?.getTracks().forEach((t) => t.stop()); stream = null;
-  clearInterval(frameTimer); demoTimers.forEach(clearTimeout); demoTimers = [];
+  demoTimers.forEach(clearTimeout); demoTimers = [];
   userMeter = botMeter = null; userLevel = botLevel = 0; botLi = null; statusText = "";
-  $("camVideo").srcObject = null; $("remote").srcObject = null; $("cam").hidden = true; camOn = false;
-  ui.cam.disabled = true; ui.cam.textContent = "ปิดกล้อง"; setMic(true); ui.mic.disabled = true;
+  $("remote").srcObject = null; setMic(true); ui.mic.disabled = true;
   archivePanel(); hidePanel(); ui.user.textContent = ""; ui.bot.textContent = ""; // cards stay: scroll back after the call
   sats.splice(0).forEach((s) => s.c.remove());
   ui.call.textContent = "เริ่มคุย"; ui.call.className = "btn primary"; ui.call.disabled = false;
@@ -768,60 +706,6 @@ function archivePanel() { // keep the last panel in the transcript as a collapse
   renderMd(b, panelText); d.append(el("summary", "", "รายละเอียด"), b); li.append(d); ui.list.append(li);
 }
 
-/* ---------- gestures (MediaPipe, local) ---------- */
-const lgList = $("lglist");
-for (const [emo, label, how] of Object.values(GESTURES)) { const li = el("li"); li.append(el("span", "", emo), label + " — " + how); lgList.append(li); }
-
-let toastTimer = 0;
-function showGesture(name) {
-  const [emo, label] = GESTURES[name];
-  const t = el("div", "gt"); t.append(el("span", "emo", emo), el("span", "lbl", label));
-  $("toast").replaceChildren(t); pulse = 1;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").replaceChildren(), 2000);
-}
-
-let handModel = null, lastSent = -Infinity, ts = -1;
-let hold = { label: null, since: 0, fired: false };
-const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-function countFingers(lm) {
-  let n = [[8, 6], [12, 10], [16, 14], [20, 18]].filter(([tip, pip]) => dist(lm[tip], lm[0]) > dist(lm[pip], lm[0])).length;
-  if (dist(lm[4], lm[5]) > dist(lm[3], lm[5])) n++;
-  return n;
-}
-
-function sendGesture(name, now) {
-  lastSent = now; hold.fired = true;
-  showGesture(name);
-  fetch("/gesture", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ webrtc_id: webrtcId, gesture: name }) }).catch(() => {});
-}
-
-function gestureTick() { // held still for HOLD_FINGERS_MS -> one choice
-  const v = $("camVideo");
-  if (!handModel || !stream || !camOn || v.readyState < 2 || !v.videoWidth) return;
-  const now = Math.max(performance.now(), ts + 1); ts = now; // MediaPipe needs strictly increasing timestamps
-  const lm = handModel.recognizeForVideo(v, now).landmarks[0];
-  const n = lm ? countFingers(lm) : 0, label = n ? "fingers_" + n : null;
-  if (label !== hold.label) hold = { label, since: now, fired: false };
-  if (state === "listening" || now - lastSent < G.COOLDOWN_MS) { hold.since = now; return; }
-  if (label && !hold.fired && now - hold.since >= G.HOLD_FINGERS_MS) sendGesture(label, now);
-}
-
-async function initGesture() {
-  try {
-    const { FilesetResolver, GestureRecognizer } = await import(MP_BASE + "/vision_bundle.mjs");
-    const fileset = await FilesetResolver.forVisionTasks(MP_BASE + "/wasm");
-    const make = async (Cls, url, extra) => {
-      try { return await Cls.createFromOptions(fileset, { baseOptions: { modelAssetPath: url, delegate: "GPU" }, runningMode: "VIDEO", ...extra }); }
-      catch { return Cls.createFromOptions(fileset, { baseOptions: { modelAssetPath: url, delegate: "CPU" }, runningMode: "VIDEO", ...extra }); }
-    };
-    handModel = await make(GestureRecognizer, GESTURE_MODEL, { numHands: 1 });
-    setInterval(gestureTick, G.TICK_MS);
-    console.log("gesture ready");
-  } catch (e) {
-    handModel = null; notice("โหลดระบบท่าทางไม่ได้ ยังคุยด้วยเสียงได้ตามปกติ"); console.warn("gesture init failed", e);
-  }
-}
-
 /* ---------- demo mode (?demo=1): scripted events, no backend ---------- */
 const DEMO_MD = ["## สรุปราคาทองวันนี้", "ข้อมูลล่าสุดจากแหล่งที่ค้นพบ", "", "- ทองคำแท่งรับซื้อ **40,000** บาท", "- ทองคำแท่งขายออก **40,200** บาท",
   "- ทองรูปพรรณขายออก `41,000` บาท", "", "| ประเภท | รับซื้อ | ขายออก |", "|---|---|---|", "| ทองคำแท่ง | 40,000 | 40,200 |", "| ทองรูปพรรณ | 39,300 | 41,000 |", "",
@@ -849,7 +733,6 @@ function runDemo() {
     [4600, () => onEvent({ kind: "info", source: "bcbrain", title: "ขายสินค้า/บริการ และใบกำกับภาษีเต็มรูป", snippet: "วิธีออกใบกำกับภาษีขายเต็มรูปและการลงบัญชีในระบบ BC", url: null, slug: "doc-sale-invoice", job: 3 })],
     // one panel event per line, as the server sends them
     ...DEMO_MD.map((_, k) => [4800 + k * 120, () => onEvent({ kind: "panel", text: DEMO_MD.slice(0, k + 1).join("\n") })]),
-    [6500, () => showGesture("fingers_2")], // fake: visuals only, no /gesture fetch
     [11200, () => onEvent({ kind: "done" })],
   ];
   for (const [d, fn] of script) demoTimers.push(setTimeout(fn, d));
@@ -874,10 +757,9 @@ ui.call.onclick = () => {
   if (pc || ui.call.textContent === "วางสาย") hangup();
   else (demo ? runDemo() : start());
 };
-const teamReady = initTeam();
-initGesture();
+initTeam();
 if (demo) runDemo();
-else teamReady.finally(start); // after /team: it says whether to ask for the camera
+else start();
 </script>
 </body>
 </html>
