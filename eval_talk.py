@@ -40,9 +40,22 @@ CALLS = {
     # a knowledge answer must be spoken and shown (javis 2026-11-07: "ขอผมอ่านรายละเอียดก่อน" then nothing)
     # "ไฟโฟ" is how STT wrote FIFO (2026-11-08 04:08): searched as heard it found nothing, and the boss said "ไม่พบ"
     "ถามระบบ": ["วิธีคำนวณต้นทุนสินค้าครับ", "แล้วต้นทุนแบบไฟโฟล่ะ"],
+    # 2026-11-08 05:16: a worked example had every number cut, then "ยังไม่มีในคลัง"
+    "ขอตัวอย่าง": ["ต้นทุนแบบถัวเฉลี่ยคิดยังไงครับ", "ช่วยทำตัวอย่างให้ดูหน่อยครับ ทำเป็นตารางเลย"],
+    # call 09:15: a made-up LOT A001 had every example row cut over "001"
+    "ตัวอย่าง LOT": ["ระบบคิดต้นทุนแบบ LOT FIFO ยังไงครับ", "ขอตัวอย่างเป็นตาราง มีเลข LOT ด้วยครับ"],
+    "ความรู้ทั่วไป": ["ทำไมท้องฟ้าถึงเป็นสีฟ้าครับ"],  # ลุงจืด 2026-11-08: no KB, no web: general knowledge, labelled
+    # 2026-11-08 06:08: STT wrote "ล็อตอัตโนมัติ" as "รถอัตโนมัติ" and the secretary went to the car-service system.
+    # ลุงจืด: an off-topic jump is asked about first, the talk stays on its topic
+    "เปลี่ยนเรื่อง": ["ระบบคิดต้นทุนแบบ LOT FIFO ยังไงครับ", "แล้วระบบเงินเดือนพนักงานล่ะครับ",
+                    "ไม่ใช่ครับ ยังเรื่องเดิม", "มันเป็นรถอัตโนมัติไม่ใช่หรอ"],
+    # 2026-11-08 06:33: asked 4 times for a stock balance query (STT: "Q", "คิวลี่"), it asked for a phone to call back
+    "ขอ query": ["ช่วยสร้างคิวรี่รายงานยอดคงเหลือสินค้าให้หน่อยครับ", "เอายอดรวมทุกคลังครับ"],
 }
-KB_CALLS = {"ถามระบบ"}
+KB_CALLS = {"ถามระบบ", "ขอตัวอย่าง", "ตัวอย่าง LOT"}
 NOT_FOUND = re.compile(r"ไม่พบ|ไม่เจอ|ยังไม่มีข้อมูล")
+WRONG_TOPIC = re.compile(r"รถยนต์|ออโต้แคร์|ศูนย์บริการ")  # where "รถอัตโนมัติ" took the talk
+ON_LOT = re.compile(r"LOT|ล็อต|ต้นทุน|FIFO|ถัวเฉลี่ย")  # a misheard "รถ" put back on the topic by the search wording is right too
 CODE_TALK = re.compile(r"ฟังก์ชัน|ฟิลด์|\b[a-z]+[A-Z]\w*|\w+_\w+")  # 2026-11-08 04:09 a caller heard "ฟังก์ชัน FIFO"
 NAME_ASK = re.compile(r"ขอทราบชื่อ|ขอชื่อ|ถามชื่อ|ชื่ออะไร|(เรียนสาย|พูด)กับใคร")  # ponytail: wordings seen in eval runs
 
@@ -51,7 +64,7 @@ cuts = []
 
 class Grab(logging.Handler):  # the server's cut lines, shown under the turn they belong to
     def emit(self, record):
-        if (msg := record.getMessage()).startswith("cut") or record.levelno >= logging.WARNING:  # a silent turn says why
+        if (msg := record.getMessage()).startswith(("cut", "not said")) or record.levelno >= logging.WARNING:  # a silent turn says why
             cuts.append(msg[:160])
 
 
@@ -71,6 +84,12 @@ def check_judge():
     missed = [line for caller, line in SHOULD_PASS if not va.judge(f"{caller}\n{extra}", line, "")]
     print(f"ตัวตรวจ: ต้องตัด {len(MUST_CUT) - len(leaked)}/{len(MUST_CUT)}, คุยเล่นผ่าน {len(SHOULD_PASS) - len(missed)}/{len(SHOULD_PASS)}")
     return [f"ตัวตรวจปล่อยประโยคแต่ง: {x}" for x in leaked] + ([f"ตัวตรวจตัดคุยเล่น: {x}" for x in missed] if len(missed) > 2 else [])
+
+
+def code_cut(cut):
+    """A panel line cut over numbers that are the digits of a code in it (A001 -> 001)."""
+    got = re.match(r"cut a panel line \(numbers ([^)]*)\): (.*)", cut)
+    return bool(got) and any(re.search(rf"[A-Za-z][-_]?{re.escape(n)}(?!\d)", got[2]) for n in got[1].split())
 
 
 def run_call(name, lines):
@@ -100,10 +119,32 @@ def run_call(name, lines):
                     ("ประวัติเก็บหมายเหตุตัดบรรทัด", grounding.CUT_SHOW in va.SESSIONS[""][-1]["content"]),
                     ("คำถามระบบแต่แผงว่าง", name in KB_CALLS and not panel),
                     ("พูดชื่อโค้ดให้ผู้โทรฟัง", bool(CODE_TALK.search(said))),
-                    ("คำถามระบบที่มีในคลังแต่ตอบว่าไม่พบ", name in KB_CALLS and bool(NOT_FOUND.search(said)))]
+                    ("คำถามระบบที่มีในคลังแต่ตอบว่าไม่พบ", name in KB_CALLS and bool(NOT_FOUND.search(said))),
+                    ("ขอตัวอย่างแต่ไม่มีตัวเลข", "ตัวอย่าง" in line and not grounding.numbers(f"{said} {panel}")),
+                    # ลุงจืด 2026-11-09 "ต้องแสดงตัวอย่างด้วยทุกครั้ง พร้อมข้อมูลตัวอย่าง": asked only how, an example still
+                    ("อธิบายวิธีคิดแต่ไม่มีตัวอย่าง", name == "ถามระบบ" and line == lines[0]
+                     and not (C.SAMPLE_LABEL.split()[0] in panel and grounding.numbers(panel))),
+                    # call 09:15: all four rows of a LOT example were cut over the "001" of "A001"; a sum the boss did
+                    # in its head ("ต่างกัน 40 บาท", eval r1) is rightly cut and is not this miss
+                    ("แถวตัวอย่างถูกตัดเพราะเลขในรหัส", "ตัวอย่าง" in line and any(code_cut(c) for c in cuts)),
+                    ("ความรู้ทั่วไปแต่ตอบว่าไม่พบ", name == "ความรู้ทั่วไป" and bool(NOT_FOUND.search(said))),
+                    ("ความรู้ทั่วไปไม่บอกว่าไม่ใช่ข้อมูลในคลัง", name == "ความรู้ทั่วไป" and "ความรู้ทั่วไป" not in said),
+                    # r14: "อยู่นอกขอบเขต" passed the label check above while the answer itself was cut
+                    ("ความรู้ทั่วไปไม่ได้ตอบคำถาม", name == "ความรู้ทั่วไป" and not re.search(r"แสง|กระจาย|กระเจิง|คลื่น", said)),
+                    ("ปฏิเสธว่านอกขอบเขต", "นอกขอบเขต" in said),
+                    ("ฟังผิดแล้วไม่ถามหรือไม่กลับเรื่องเดิม",
+                     name == "เปลี่ยนเรื่อง" and line == lines[-1] and "เปลี่ยน" not in said and not ON_LOT.search(said)),
+                    ("นอกเรื่องแต่ไม่ถามก่อนเปลี่ยน", name == "เปลี่ยนเรื่อง" and line == lines[1] and "เปลี่ยน" not in said),
+                    # r18: "ไม่ใช่ครับ ยังเรื่องเดิม" got "กลับมาเรื่องเดิม… เรื่องระบบเงินเดือน", then asked about pay again
+                    ("บอกเรื่องเดิมแล้วยังไปเรื่องใหม่", name == "เปลี่ยนเรื่อง" and line in lines[2:] and "เงินเดือน" in said),
+                    ("หลุดไปเรื่องที่ฟังผิด", name == "เปลี่ยนเรื่อง" and bool(WRONG_TOPIC.search(f"{said} {panel}"))),
+                    ("ถามเปลี่ยนเรื่องทั้งที่คุยเรื่องเดิม", name != "เปลี่ยนเรื่อง" and "เปลี่ยนไปคุย" in said),
+                    ("ขอเรื่องเทคนิคแล้วโยนให้ติดต่อกลับ", name == "ขอ query" and "ติดต่อกลับ" in said)]
         bad += [f"{name}: {line}: {p}" for p, hit in problems if hit]
     asks = sum(bool(NAME_ASK.search(m["content"])) for m in va.SESSIONS[""] if m["role"] == "assistant")
-    return bad + ([f"{name}: ถามชื่อ {asks} ครั้งในสายเดียว"] if asks > 2 else [])
+    sql = any(re.search(r"(?i)\bselect\b", m["content"]) for m in va.SESSIONS[""] if m["role"] == "assistant")
+    return bad + ([f"{name}: ถามชื่อ {asks} ครั้งในสายเดียว"] if asks > 2 else []) + \
+        ([f"{name}: ขอ query แต่ไม่มี SQL บนจอ"] if name == "ขอ query" and not sql else [])
 
 
 def main():

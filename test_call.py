@@ -44,6 +44,105 @@ real_judge, va.judge, turn = va.judge, (lambda sources, piece, before: False), {
 list(va.panel_events(iter(["สรุป\n| ขั้น | ทำอะไร |\n|---|---|\n| 1 | ไล่บรรทัด |\n"]), [], set(), "", turn))
 va.judge = real_judge
 assert turn["kept"][:2] == ["| ขั้น | ทำอะไร |", "|---|---|"], turn  # a table keeps its column names (2026-11-08 04:59)
+# a table's own row numbers are no claim: rows 10, 11 and 13 of a 13-step table were cut (call 2026-11-09 06:38),
+# 1-9 pass as lone digits. A first cell that does not count on from the row above is still a number to check
+va.judge, turn = (lambda sources, piece, before: True), {}
+rows = "| ขั้น | ทำอะไร |\n|---|---|\n" + "".join(f"| {i} | ไล่บรรทัด |\n" for i in range(1, 12)) + "| 75 | ไล่บรรทัด |\n"
+list(va.panel_events(iter([rows]), [], set(), "", turn))
+va.judge = real_judge
+assert [r.split("|")[1].strip() for r in turn["kept"][2:] if r.startswith("|")] == [str(i) for i in range(1, 12)], turn["kept"]
+# the STT spaces words out: "วันนี้ วัน อะไร" got no date (call 2026-11-09 06:39)
+assert "วัน" in va.clock_note("วันนี้ วัน อะไร") and "เวลา" in va.clock_note("ตอนนี้ กี่ โมง") and not va.clock_note("ขอดูต้นทุน")
+# an example's label line is no claim (ลุงจืด 2026-11-09), passed by code: in the judge's sources it cut small talk
+va.judge, turn = (lambda sources, piece, before: False), {}
+list(va.panel_events(iter([f"#### {C.SAMPLE_LABEL}\n### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)\n| ขั้น | ทำอะไร |\n"]), [], set(), "", turn))
+va.judge = real_judge
+assert turn["kept"][:2] == [f"#### {C.SAMPLE_LABEL}", "### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)"] and C.SAMPLE_LABEL not in va.OWN_WORDS, turn
+sums = va.calc("รับเข้า 10 ชิ้น: 10*50\n1,200/20\n0.1+0.2\n1000/3\n1/0\n__import__('os')\n2**99999")[1].splitlines()
+assert sums[:4] == ["รับเข้า 10 ชิ้น 10*50 = 500", "1200/20 = 60", "0.1+0.2 = 0.3", "1000/3 = 333.33"], sums  # Decimal, half up
+assert all("คิดไม่ได้" in s for s in sums[4:7]) and len(sums) == 8, sums  # no crash, no code, no power; then the unit line
+assert not va.grounding.unsourced("| 1 | 10 | 50.00 | 55.50 |", va.grounding.numbers("10*50 = 500 1100/20 = 55.5 50")), "50.00 is 50"
+lot = va.calc("LOT A001 รับเข้า 100 ชิ้น ชิ้นละ 20 บาท: 100*20")[1]
+assert not va.grounding.unsourced("| 1 | A001 | 100 | 20 | 2,000 |", va.grounding.numbers(lot)), lot  # a code in the label is a source
+# call 09:15: every example row was cut over "001" of a made-up LOT A001; a code is a name, a rate or a spaced number is not
+assert va.grounding.numbers("| 1 | รับเข้า | LOT A001 | 10 |") == {"10"}, va.grounding.numbers("LOT A001 10")
+assert va.grounding.numbers("ภาษี VAT7%") == {"7#"} and va.grounding.numbers("LOT 001") == {"001"}
+# call 09:50: calc gave 11.67, the spoken "สิบเอ็ดบาทหกสิบเจ็ดสตางค์" read 11 and 67, "สิบเอ็ดจุดหกเจ็ด" read 11.067
+assert va.grounding.numbers("สิบเอ็ดบาทหกสิบเจ็ดสตางค์") == va.grounding.numbers("สิบเอ็ดจุดหกเจ็ด") == {"11.67"}
+assert va.grounding.numbers("ห้าสิบบาทห้าสตางค์") == {"50.05"}
+assert va.clean("ที่ต้องการ是关于อะไรครับ") == "ที่ต้องการอะไรครับ"  # DeepSeek slipped Chinese into a Thai sentence (log 06:34)
+src = "ic_inventory.balance_qty qty_2 calc_flag flag: 12, 310, 54-73"
+assert va.code_unsourced("SELECT SUM(COALESCE(d.qty_2,0) * d.calc_flag) AS stock_value FROM ic_inventory i",
+                         va.grounding.numbers(src), src) == set()  # its own AS name, and qty_2,0 is no number 20
+assert va.code_unsourced("AND d.calc_flag IN (12, 310, 54, 55, 72, 73)", va.grounding.numbers(src), src) == set()
+assert va.code_unsourced("FROM ic_stock_balance s WHERE x = 999", va.grounding.numbers(src), src) == {"ic_stock_balance", "999"}
+chat, va.worker_chat = va.worker_chat, lambda messages, tools: ("LOT อัตโนมัติ\nเปลี่ยนเรื่อง: LOT FIFO | ระบบรถยนต์", [])
+talk = [{"role": "user", "content": "LOT FIFO คิดยังไง"}, {"role": "assistant", "content": "คิดแบบถัวเฉลี่ยครับ"}]
+assert va.search_words(talk, "รถอัตโนมัติ") == ("LOT อัตโนมัติ", ("LOT FIFO", "ระบบรถยนต์"))
+assert va.search_words([], "รถอัตโนมัติ")[1] is None  # a first question has no topic to leave
+va.worker_chat = lambda messages, tools: ("FIFO ตาราง", [])
+assert va.search_words(talk, "ตารางไฟโฟ") == ("FIFO ตาราง", None)
+import numpy as np
+def no_boss(*a, **k):
+    raise AssertionError("the topic ask called the boss")
+saved = va.early_words, va.speak, va.worker_chat, va.llm_tokens, va.SESSIONS.get("")
+va.early_words, va.speak, va.llm_tokens = (lambda data: "รถอัตโนมัติ"), (lambda text: np.zeros(1)), no_boss
+va.worker_chat = lambda messages, tools: ("LOT อัตโนมัติ\nเปลี่ยนเรื่อง: LOT FIFO | ระบบรถยนต์", [])
+va.SESSIONS[""] = list(talk)
+bots = [o[1].args[0]["text"] if isinstance(o, tuple) else None for o in va.reply((16000, np.zeros(16000)))]
+assert [b for b in bots if b] == ["ขอถามให้ชัดก่อนครับ จะเปลี่ยนไปคุยเรื่องระบบรถยนต์ หรือยังคุยเรื่องLOT FIFOต่อครับ"], bots
+assert va.SESSIONS[""][-1]["content"].startswith("ขอถามให้ชัดก่อน")  # the ask is in the history: the next turn knows it
+seen = []
+def boss(messages, calls, tools, choice=None):
+    seen.append(messages[-1]["content"])
+    return iter(())
+def no_search(calls, said, turn, tools):
+    return [""] * len(calls)
+    yield
+dispatch, va.dispatch, va.llm_tokens, va.early_words = va.dispatch, no_search, boss, (lambda data: "ไม่ใช่ครับ ยังเรื่องเดิม")
+bots = [o[1].args[0]["text"] if isinstance(o, tuple) else None for o in va.reply((16000, np.zeros(16000)))]
+assert "ขอถามให้ชัดก่อน" not in " ".join(b for b in bots if b), bots  # never the topic ask twice in a row
+assert "คือคุยเรื่องLOT FIFOต่อ" in seen[0], seen  # eval r18: "ยังเรื่องเดิม" got the new topic back
+# call 2026-11-08 13:16: 28 of 92 lines were a bare "ขอโทษครับ" opener, all a talked-over caller heard. It is dropped,
+# the rest is still said, and an opener alone falls to CUT_ALL, never silence
+va.judge, va.early_words = (lambda *a: True), (lambda data: "ฟังไม่ออก")
+for toks, want in ((["ขอโทษ", "ครับ ", "ฟังไม่ชัด", "เลย ช่วยพูดอีกครั้ง", "ได้ไหมครับ"], ["ฟังไม่ชัดเลย ช่วยพูดอีกครั้งได้ไหมครับ"]),
+                   (["ขอโทษ", "ครับ"], [va.CUT_ALL])):
+    va.SESSIONS[""], va.llm_tokens = [], (lambda *a, toks=toks: iter(toks))
+    bots = [o[1].args[0]["text"] for o in va.reply((16000, np.zeros(16000))) if isinstance(o, tuple)]
+    assert bots == want, bots
+va.judge = real_judge
+va.dispatch = dispatch
+va.early_words, va.speak, va.worker_chat, va.llm_tokens, va.SESSIONS[""] = saved
+va.worker_chat = chat
+# AirPods call 2026-11-08 20:32: a lone เอ่อ/นะครับ was a turn that cut the answer off; อืม passes over only while it talks or thinks
+from concurrent.futures import Future
+from types import SimpleNamespace as NS
+h = NS(playing=(), HESITATIONS=va.BargeInReplyOnPause.HESITATIONS, BACKCHANNELS=va.BargeInReplyOnPause.BACKCHANNELS)
+for heard, responding, playing, want in (("เอ่อ...", False, (), True), ("นะครับ", False, (), True), ("อืม", False, (), False),
+                                          ("อืม", True, (), True), ("อืม", False, ((0, time.monotonic(), "x"),), True),
+                                          ("หืม", True, (), False), ("ขอดูต้นทุน", True, (), False), (None, False, (), False)):
+    va.EARLY.clear()
+    if heard is not None:
+        (f := Future()).set_result(heard)
+        va.EARLY[id(h)] = (None, f)
+    h.playing = playing
+    state = NS(stream=np.zeros(16000), sampling_rate=16000, responding=responding)
+    assert va.BargeInReplyOnPause.just_filler(h, state) is want, (heard, responding, playing)
+va.EARLY.clear()
+# AirPods call 2026-11-08 23:03: the turn checks ran on every frame until the reply started (3-8 times a turn).
+# They run once a pause
+from fastrtc.reply_on_pause import AppState
+h, checks = object.__new__(va.BargeInReplyOnPause), []
+h.determine_pause, h.send_message_sync = (lambda *a: True), (lambda m: None)
+h.hears_itself = lambda state: False
+h.just_filler = lambda state: checks.append(1)  # None: a turn
+h.state = AppState(stream=np.zeros(16000, np.int16), sampling_rate=16000)
+voiced, va.voiced = va.voiced, (lambda audio: np.ones(8000, np.float32))
+for _ in range(3):
+    va.BargeInReplyOnPause.process_audio(h, (16000, np.zeros(320, np.int16)), h.state)
+assert h.state.pause_detected and len(checks) == 1, checks
+va.voiced = voiced
 assert va.LONG_NUMBER.sub("", "ร้านสมหญิงวัสดุ เบอร์ 081-123-4567 ค่ะ ปี 2567") == "ร้านสมหญิงวัสดุ เบอร์  ค่ะ ปี 2567"  # no phone to the BC brain
 assert va.LONG_NUMBER.sub("", "เบอร์ ศูนย์ แปด หนึ่ง หนึ่ง สอง สาม สี่ ห้า หก เจ็ด ค่ะ ภาษีสองแบบ") == "เบอร์ ค่ะ ภาษีสองแบบ"
 assert va.clean("**สวัสดี** # ครับ\n- ข้อหนึ่ง") == "สวัสดี ครับ ข้อหนึ่ง"
@@ -66,7 +165,6 @@ assert all(f'"{g}"' in ui or g.startswith("fingers_") for g in va.GESTURES), "ge
 va.stt = va.load_stt()
 va.llm = ollama.Client(host=C.OLLAMA_HOST)
 va.tts = va.load_tts()
-va.voice = va.load_voice()
 va.load_mcp_tools()
 va.load_workers()
 # the public line (javis): the BC brain only, in code; this PC's own tools answer as unknown there
@@ -126,19 +224,6 @@ except AssertionError:
 h.playing = ((time.monotonic() - 9, time.monotonic() + 60, "ราคาทองวันนี้เท่าไหร่ครับ"),)
 until_pause(speech)
 h.playing = ()
-# several people near the mic (ลุงจืด 2026-11-04 "เสียงมีหลายคนพูด"): the call's first voice is the caller's, another
-# voice later is no turn; the same voice saying other words and a short ครับ still are
-h.caller = None
-until_pause(speech)
-other = (librosa.effects.pitch_shift(speech / 32767, sr=48000, n_steps=7) * 32767).astype(np.int16)  # 0.12 to the caller
-try:
-    until_pause(other)
-    raise SystemExit("another voice made a turn")
-except AssertionError:
-    pass
-until_pause((librosa.load(C.REF_AUDIO_PATH, sr=48000)[0][2 * 48000 :] * 32767).astype(np.int16))  # 0.59: the same voice
-until_pause(other[int(0.5 * 48000) : int(0.85 * 48000)])  # 0.29 s of speech, too short to tell: a turn
-h.caller = None
 # words for someone else in the room: the boss answers only SILENT_MARK (live DeepSeek), and that makes no sound
 room = [{"role": "system", "content": C.SYSTEM_PROMPT}, {"role": "user", "content": "คุณต่าย คุณต่าย คุณต่าย"}]
 assert C.SILENT_MARK in "".join(va.llm_tokens(room, [], None)), "the boss answered someone else in the room"
@@ -168,6 +253,23 @@ real, va.DEEPSEEK, calls = va.DEEPSEEK, FakeDeepSeek(), []
 said = "".join(va.deepseek_tokens([], calls, [{}]))
 va.DEEPSEEK = real
 assert said.strip() == "เข้าใจครับ" and [(c["name"], c["args"]) for c in calls] == [("read_note", {"slug": "pos-overview", "limit": 5})], (said, calls)
+# replay 2026-11-08: the last-round markup had a space after the bars, "<｜｜DSML｜｜ invoke", and read as no call
+DSML_TOKENS = [t.replace("｜｜DSML｜｜", "｜｜DSML｜｜ ") for t in DSML_TOKENS]
+va.DEEPSEEK, calls = FakeDeepSeek(), []
+said = "".join(va.deepseek_tokens([], calls, [{}]))
+va.DEEPSEEK = real
+assert [(c["name"], c["args"]) for c in calls] == [("read_note", {"slug": "pos-overview", "limit": 5})], (said, calls)
+# the last round sees the turn as plain text: with its tool calls kept DeepSeek wrote another as DSML (replay 2026-11-08)
+plain = va.plain_turn([{"role": "system", "content": "s"}, {"role": "user", "content": "q"},
+                       {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+                       {"role": "tool", "tool_call_id": "1", "content": "r1"},
+                       {"role": "assistant", "content": "ขอเช็กให้ครับ", "tool_calls": [{"id": "2"}]},
+                       {"role": "tool", "tool_call_id": "2", "content": "r2"}, va.LAST_ROUND])
+assert [m["role"] for m in plain] == ["system", "user", "assistant", "user"] and "r1" in plain[1]["content"], plain
+assert not any("tool_calls" in m for m in plain) and plain[3]["content"].endswith(va.LAST_ROUND["content"]), plain
+# the judge's second look reads the source lines nearest the piece, a one-line note's \n breaks too
+near = va.grounding.near_sources("ยกเลิกบิลขาย", "หัวข้อ\\nวิธียกเลิกบิลขายที่หน้าจอขาย\\nอื่นๆ\n" + "ก" * 9000, 100)
+assert near == "วิธียกเลิกบิลขายที่หน้าจอขาย", near
 # DeepSeek down (here: a bad key) -> the caller hears the apology, nothing made up
 key, C.DEEPSEEK_API_KEY = C.DEEPSEEK_API_KEY, "sk-invalid"
 assert "".join(va.llm_tokens([{"role": "user", "content": "พูดคำว่า สวัสดี"}], [], None)) == va.BRAIN_DOWN

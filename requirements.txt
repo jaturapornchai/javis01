@@ -14,4 +14,3 @@ ddgs
 pypdf
 httpx
 google-auth-oauthlib
-speechbrain  # the caller's voiceprint (ECAPA)

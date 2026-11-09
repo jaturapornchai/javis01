@@ -7,6 +7,7 @@ Browser (static/index.html: mic over WebRTC, camera frames, MediaPipe gestures, 
 
 Run: python voice_agent.py   then open http://127.0.0.1:7860
 """
+import ast
 import asyncio
 import base64
 import datetime
@@ -15,6 +16,7 @@ import hmac
 import itertools
 import json
 import logging
+import operator
 import os
 import re
 import subprocess
@@ -24,6 +26,7 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 import librosa
@@ -41,7 +44,6 @@ from fastrtc.utils import create_message
 from omnivoice import OmniVoice
 from omnivoice.models.omnivoice import OmniVoiceGenerationConfig
 from pypdf import PdfReader
-from speechbrain.inference.speaker import EncoderClassifier
 
 import config as C
 import desktop_agent
@@ -58,7 +60,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # Thai separates phrases with spaces, not punctuation; "." is not a boundary so "1,250.50" stays whole.
 BOUNDARY = re.compile(r"\s")
 SENTENCE_END = re.compile(r"(?:ครับ|ค่ะ|คะ|[!?])\s")  # where a spoken sentence ends: one chunk = one tune
-JUNK = re.compile(r"<think>.*?</think>|[*#_`~>|\[\]{}]|^\s*[-•]\s*", re.S | re.M)
+JUNK = re.compile(r"<think>.*?</think>|[*#_`~>|\[\]{}]|^\s*[-•]\s*|[\u3040-\u30ff\u4e00-\u9fff]", re.S | re.M)
 # ponytail: keyword route. The brain sometimes describes the camera without looking (it once invented a wooden
 # table for a red circle), so these words force a look_at_camera first. Upgrade: a small classifier model.
 CAMERA_ASK = re.compile(r"กล้อง|มองเห็น|เห็นอะไร|เห็นไหม|เห็นมั้ย|ถืออะไร|นี่คืออะไร|อันนี้คืออะไร|อันนี้อะไร|ใส่เสื้อ|หน้าตาผม|หน้าตาฉัน|ดูนี่|ดูสิ|ดูซิ")
@@ -72,6 +74,9 @@ def masked(text):  # customers' phone/tax/account numbers stay out of the server
     return LONG_NUMBER.sub("###", text)
 
 
+# 2026-11-08 06:06-06:09: asked for worked examples, the boss twice made a table without calc and every row was cut.
+# ponytail: "ตัวอย่าง" also matches "มีตัวอย่างลูกค้าไหม": one wasted calc line, then the usual answer
+EXAMPLE_ASK = re.compile(r"ตัวอย่าง|สมมติ|ตาราง\S{0,4}คำนวณ")
 LATEST_ASK = re.compile(r"ข่าว|ล่าสุด|ทอง|น้ำมัน|หุ้น|ค่าเงิน|อัตราแลกเปลี่ยน|ดอลลาร์|บิตคอยน์|คริปโต|อากาศ|ฝนตก|พยากรณ์|"
                         r"ผลบอล|ฟุตบอล|หวย|สลากกินแบ่ง|ราคา.{0,8}วันนี้|วันนี้.{0,8}ราคา")
 CONFIRM = re.compile(r"ยืนยัน|กดเลย|ทำเลย|เปิดเลย|ตกลง|ได้เลย|โอเค|ใช่")  # the caller's yes to a held computer action
@@ -100,7 +105,7 @@ def to16k(audio):  # fastrtc frames -> what Whisper and its VAD take
 
 def voiced(audio):
     """The speech only, 16 kHz, by transcribe()'s own VAD: empty = it would transcribe nothing. No padding (its
-    0.4 s a side made a 0.5 s word 2 s long), so the length is the speech's own and the voiceprint hears no silence."""
+    0.4 s a side made a 0.5 s word 2 s long), so the length is the speech's own."""
     data = to16k(audio)
     spans = get_speech_timestamps(data, VadOptions(**C.STT_VAD_PARAMS, speech_pad_ms=0))
     return np.concatenate([data[:0], *(data[t["start"] : t["end"]] for t in spans)])
@@ -108,16 +113,6 @@ def voiced(audio):
 
 def stt_hears(audio):
     return voiced(audio).size > 0
-
-
-def load_voice():  # CPU: the GPU runs the STT and the TTS
-    return EncoderClassifier.from_hparams(source=C.SPEAKER_MODEL, run_opts={"device": "cpu"})
-
-
-def voiceprint(speech):  # 16 kHz speech -> unit-length ECAPA embedding
-    with torch.inference_mode():  # ponytail: 8 s of a turn is plenty and caps the time
-        e = voice.encode_batch(torch.from_numpy(speech[: 16000 * 8])[None]).squeeze()
-    return e / e.norm()
 
 
 def transcribe(audio):
@@ -202,6 +197,14 @@ def thai_now(clock=True):
     return f"{day} เวลา {n:%H:%M} น." if clock else day
 
 
+def clock_note(heard):
+    """The clock for this turn, only when the caller asks the date or time (why: see reply)."""
+    bare = re.sub(r"\s+", "", heard)  # the STT spaces words out: "วันนี้ วัน อะไร" missed วันอะไร (call 2026-11-09 06:39)
+    if DATE_ASK.search(bare) or TIME_ASK.search(bare):
+        return f"\n(ระบบ: นาฬิกาในเครื่องตอนนี้ {thai_now(bool(TIME_ASK.search(bare)))})"
+    return ""
+
+
 def load_tts():
     """OmniVoice plus the reference voice, encoded once instead of on every phrase."""
     model = OmniVoice.from_pretrained(C.TTS_MODEL, device_map="cuda:0" if C.HAS_CUDA else "cpu",
@@ -283,6 +286,61 @@ def look_at_camera(question):
     return [{"source": "camera", "title": "ภาพจากกล้อง", "snippet": answer, "url": None}], answer
 
 
+CALC_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
+
+
+def calc_value(node, src):
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+        return Decimal(ast.get_source_segment(src, node))  # the digits as written: no binary float in a money sum
+    if isinstance(node, ast.BinOp) and type(node.op) in CALC_OPS:
+        return CALC_OPS[type(node.op)](calc_value(node.left, src), calc_value(node.right, src))
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = calc_value(node.operand, src)
+        return -value if isinstance(node.op, ast.USub) else value
+    raise ValueError("ใช้ได้แค่ตัวเลข + - * / และวงเล็บ")
+
+
+def calc(lines):
+    """ลุงจืด 2026-11-08 "เอา deepseek มาเสริมได้ถ้าไม่รู้หรือทำไม่ได้": a worked example the caller asked for
+    (call 05:16, "ช่วยทำตัวอย่างให้หน่อย") had every number cut, none was in a source. Code does the sums, so the
+    numbers and labels here are this turn's sources. ponytail: a label's words become sources too, so the boss
+    could pass a claim through one; one sum per line, an earlier line's result is written out, not named."""
+    out = []
+    for line in str(lines).splitlines()[:20]:
+        label, _, expr = line.rpartition(":")
+        src = expr.replace(",", "").replace("×", "*").replace("÷", "/").strip()[:200]
+        if not src:
+            continue
+        try:
+            value = calc_value(ast.parse(src, mode="eval").body, src)
+            value = value.quantize(Decimal("0.01"), ROUND_HALF_UP).normalize()  # baht and satang, half up, once
+            out.append(f"{label.strip()} {src} = {value:,f}".strip())
+        except (SyntaxError, ValueError, ArithmeticError) as e:
+            out.append(f"{line.strip()} คิดไม่ได้ ({e})")
+    text = "\n".join(out)
+    card = {"source": "calc", "title": "เครื่องคิดเลข", "snippet": text[:300], "url": None}
+    # eval 2026-11-08: a label without its unit ("ชิ้นละ 100: 10*100") got all 4 spoken example sentences cut over
+    # บาท. ponytail: in a turn that used calc, บาท and ชิ้น pass the judge even for another currency; digits are still checked
+    return [card], f"{text}\n(หน่วยตามชื่อบรรทัด เช่น บาท ชิ้น)" if text else "ไม่มีสูตรให้คิด"
+
+
+# ลุงจืด 2026-11-08: what the BC brain and the web don't have, DeepSeek's own knowledge may answer, told to the caller
+# as that and never as BC data. The boss's own memory is still cut by the judge: only this worker's answer is a source
+GENERAL_ASK = (f"{C.EXPERT}แต่งานนี้ตอบความรู้ทั่วไปได้ทุกเรื่อง ห้ามปฏิเสธว่าอยู่นอกขอบเขต "  # eval r14: the persona made it refuse the sky
+               "ตอบคำถามจากความรู้ทั่วไปเป็นภาษาไทย 2-4 ประโยค เฉพาะส่วนที่แน่ใจ ส่วนที่ไม่แน่ใจให้บอกว่าไม่แน่ใจ "
+               "ห้ามตอบเรื่องโปรแกรม BC ราคา โปรโมชัน หรือข้อมูลของบริษัทใด ให้ตอบว่าต้องดูจากคลังความรู้ "
+               # log 2026-11-08 07:21: it said "ค่าขนส่งถือเป็นค่าจ้างทำของหรือค่าบริการ" (RD ruling 0706/8419: transport is its own class)
+               f"อัตราภาษี มาตรา หรือข้อกฎหมายไทย ห้ามตอบจากความจำ ให้ตอบว่าในคลังไม่มีเรื่องนี้ ต้องให้{C.USER_NAME}หรือนักบัญชียืนยัน "
+               "อัตราหรือเรื่องอื่นที่เปลี่ยนตามเวลา ให้บอกด้วยว่าควรเช็กกับแหล่งทางการล่าสุด")
+
+
+def general_knowledge(question):
+    text, _ = worker_chat([{"role": "system", "content": GENERAL_ASK}, {"role": "user", "content": str(question)[:500]}], None)
+    text = " ".join(text.split())
+    card = {"source": "deepseek", "title": "ความรู้ทั่วไป (ไม่ใช่ข้อมูลในคลัง BC)", "snippet": text[:300], "url": None}
+    return [card], f"ความรู้ทั่วไปจาก DeepSeek ไม่ใช่ข้อมูลในคลังความรู้บีซี ต้องบอกผู้ฟังแบบนี้: {text}"
+
+
 class MCPClient:
     """ponytail: minimal MCP streamable-HTTP client (initialize, tools/list, tools/call); one session, no server push."""
 
@@ -326,14 +384,22 @@ def one_arg(name, desc):
     return {"type": "object", "properties": {name: {"type": "string", "description": desc}}, "required": [name]}
 
 
-TOOLS = {"web_search": web_search, "search_docs": search_docs, "look_at_camera": look_at_camera}
-WORKER = {"web_search": "web", "search_docs": "docs", "look_at_camera": "camera"}  # tool -> team member shown on screen
+TOOLS = {"web_search": web_search, "search_docs": search_docs, "look_at_camera": look_at_camera, "calc": calc,
+         "general_knowledge": general_knowledge}
+WORKER = {"web_search": "web", "search_docs": "docs", "look_at_camera": "camera", "calc": "calc", "general_knowledge": "deepseek"}  # tool -> team member shown on screen
 TOOL_SPECS = [
     tool_spec("web_search", "ค้นข้อมูลจากอินเทอร์เน็ต เช่น ข่าว ราคา สภาพอากาศ หรือข้อเท็จจริงที่ไม่แน่ใจ", one_arg("query", "คำค้น")),
     tool_spec("search_docs", "ค้นเอกสารและไฟล์ของผู้ใช้ในเครื่อง", one_arg("query", "คำสำคัญสั้นๆ คั่นด้วยเว้นวรรค เช่น ร้าน เวลาเปิด")),
     tool_spec("look_at_camera", "ดูภาพจากกล้องตอนนี้ เมื่อผู้ใช้ถามถึงสิ่งที่อยู่หน้ากล้อง ตัวเขา หรือของที่ถืออยู่", one_arg("question", "สิ่งที่อยากรู้จากภาพ")),
+    tool_spec("calc", "เครื่องคิดเลข คิดตัวเลขที่ต้องคำนวณก่อนพูดทุกครั้ง เช่น ตัวอย่างที่ผู้ฟังขอ ต้นทุนถัวเฉลี่ย VAT ยอดรวม",
+              one_arg("lines", "บรรทัดละหนึ่งสูตร เขียนว่า สิ่งที่คิดพร้อมหน่วย: สูตร ใช้ได้แค่ตัวเลข + - * / และวงเล็บ "
+                      "เช่น รับเข้า 10 ชิ้น ชิ้นละ 50 บาท: 10*50 ตัวเลขทุกช่องของตารางรวมยอดสะสมต้องมีบรรทัดของมัน "
+                      "รหัสสมมติ เช่น LOT A001 ให้อยู่ในชื่อบรรทัด")),
+    tool_spec("general_knowledge", "ถามความรู้ทั่วไปที่ไม่ใช่เรื่องโปรแกรม BC ราคา หรือของบริษัท ใช้เมื่อคลังความรู้และเว็บไม่มีคำตอบเท่านั้น",
+              one_arg("question", "คำถามเต็มประโยค")),
 ]
-STATUS = {"web_search": "กำลังค้นหาในอินเทอร์เน็ต", "search_docs": "กำลังค้นเอกสารในเครื่อง", "look_at_camera": "กำลังดูภาพจากกล้อง"}
+STATUS = {"web_search": "กำลังค้นหาในอินเทอร์เน็ต", "search_docs": "กำลังค้นเอกสารในเครื่อง", "look_at_camera": "กำลังดูภาพจากกล้อง",
+          "calc": "กำลังคำนวณ", "general_knowledge": "กำลังถามความรู้ทั่วไป"}
 FILLER_TEXT = {"web_search": "ขอค้นข้อมูลสักครู่นะครับ", "search_docs": "ขอเปิดดูเอกสารสักครู่นะครับ",
                "look_at_camera": "ขอดูภาพจากกล้องสักครู่นะครับ", "": "ขอตรวจสอบข้อมูลสักครู่นะครับ"}
 FILLERS = {}  # pre-rendered at warm-up so the filler plays instantly
@@ -466,8 +532,9 @@ DEEPSEEK = httpx.Client(limits=httpx.Limits(keepalive_expiry=60))
 
 
 # DeepSeek V4 sometimes writes a tool call as its own markup in the text instead of tool_calls (a known leak,
-# e.g. github.com/anomalyco/opencode/pull/60575): <｜DSML｜tool_calls>, also with doubled bars or a "calls" wrapper
-DSML_BAR = r"[｜|]+"
+# e.g. github.com/anomalyco/opencode/pull/60575): <｜DSML｜tool_calls>, also with doubled bars or a "calls" wrapper,
+# and in the last round with a space after the bars ("<｜｜DSML｜｜ invoke", replay 2026-11-08: 2 of 5 read no call)
+DSML_BAR = r"[｜|]+\s*"
 DSML_START = re.compile(rf"<{DSML_BAR}DSML")
 DSML_INVOKE = re.compile(rf'<{DSML_BAR}DSML{DSML_BAR}invoke\s+name="([^"]+)"\s*>(.*?)</{DSML_BAR}DSML{DSML_BAR}invoke>', re.S)
 DSML_PARAM = re.compile(rf'<{DSML_BAR}DSML{DSML_BAR}parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)'
@@ -488,11 +555,12 @@ def dsml_calls(markup):
     return calls
 
 
-def deepseek_tokens(messages, calls, tools):
+def deepseek_tokens(messages, calls, tools, choice=None):
     """The boss on DeepSeek (OpenAI-style SSE). A tool call arrives in pieces (id and name first, then bits of
     its JSON arguments), so calls are put together when the stream ends."""
     body = {"model": C.DEEPSEEK_MODEL, "messages": messages, "stream": True, "temperature": C.LLM_TEMPERATURE,
-            "thinking": {"type": "disabled"}, **({"tools": tools} if tools else {})}  # thinking: +seconds per turn
+            "thinking": {"type": "disabled"}, **({"tools": tools} if tools else {}),  # thinking: +seconds per turn
+            **({"tool_choice": choice} if tools and choice else {})}  # "none", or a named tool; needs thinking off
     parts, held, markup = {}, "", ""  # held: a tail that may be the start of DSML; markup: the DSML itself
     with DEEPSEEK.stream("POST", f"{C.DEEPSEEK_URL}/chat/completions", json=body, timeout=C.DEEPSEEK_TIMEOUT,
                       headers={"Authorization": f"Bearer {C.DEEPSEEK_API_KEY}"}) as r:
@@ -532,12 +600,12 @@ def deepseek_tokens(messages, calls, tools):
         calls.append({"id": p["id"], "name": p["name"], "args": args if isinstance(args, dict) else {}})
 
 
-def llm_tokens(messages, calls, tools):
+def llm_tokens(messages, calls, tools, choice=None):
     """The boss on DeepSeek. If it fails before saying anything (network, quota, key) the caller hears BRAIN_DOWN,
     never a guess; half an answer already out just ends the turn."""
     spoke = False
     try:
-        for tok in deepseek_tokens(messages, calls, tools):
+        for tok in deepseek_tokens(messages, calls, tools, choice):
             spoke = spoke or bool(tok)
             yield tok
     except (httpx.HTTPError, ValueError, KeyError) as e:
@@ -548,6 +616,7 @@ def llm_tokens(messages, calls, tools):
 
 
 GEO, GEO_LOCK, GEO_LAST = {}, threading.Lock(), [0.0]  # place -> "lat,lon" (found ones only)
+ROW_NO = re.compile(r"\s*\|\s*(\d{1,3})\s*\|")  # a table row's first cell, a plain count
 MAP_LINE = re.compile(r"^\s*\[แผนที่\]\s*(.+?)\s*$")
 
 
@@ -569,6 +638,26 @@ def geocode(place):
     return GEO.get(place)
 
 
+# SQL words a query may use that no note spells out; any other name in a code line must be in the sources
+CODE_WORDS = set("select from where and or not in is null as on join left right inner outer full cross group by order "
+                 "having sum count min max avg round abs coalesce nullif case when then else end between like ilike "
+                 "distinct limit offset union all with asc desc cast numeric integer text varchar date now interval "
+                 "true false exists any lower upper trim extract over partition row_number using values".split())
+
+
+def code_unsourced(line, known, sources):
+    """What a code line makes up: a table, column or number no source has. A name after AS is the query's own;
+    names and commas go before the numbers are read (eval 2026-11-08 read "qty_2,0" as 20), and a source range
+    "54-73" covers the flags between. ponytail: a word list and a substring test, 1-2 letter aliases pass,
+    an alias used on a later line is cut; a SQL parser if real queries trip it"""
+    low, own = sources.lower(), set(re.findall(r"(?i)\bas\s+([A-Za-z_]\w*)", line))
+    names = {w for w in re.findall(r"[A-Za-z_]\w*", line)
+             if len(w) > 2 and w.lower() not in CODE_WORDS and w.lower() not in low and w not in own}
+    spans = {str(n) for a, b in re.findall(r"\b(\d{1,4})\s*-\s*(\d{1,4})\b", sources)
+             if int(a) < int(b) <= int(a) + 100 for n in range(int(a), int(b) + 1)}
+    return names | grounding.unsourced(re.sub(r"[A-Za-z_]\w*|,", " | ", line), set(known) | spans)
+
+
 def panel_events(tokens, screen, known, sources, turn):
     """The [จอ] part a line at a time: a line shows once complete, its numbers sourced and the judge backing it.
     Progress lives in `turn`, so a later tool round goes on from the lines already checked."""
@@ -582,11 +671,25 @@ def panel_events(tokens, screen, known, sources, turn):
             # a table's first row is its column names, no claim: the judge cut "| ขั้น | สิ่งที่ระบบทำ | สูตร/เงื่อนไข |"
             # (2026-11-08 04:59) and the page, with no head row, ran the whole table into one paragraph
             head = ln.lstrip().startswith("|") and not (kept and kept[-1].lstrip().startswith("|"))
-            if not re.search(r"\w", ln) or (not (bad := grounding.unsourced(ln, known)) and (head or judge(sources, ln, "\n".join(kept)))):
+            # a table's own row numbers are no claim: rows 10, 11, 13 of a 13-step table were cut (call 2026-11-09
+            # 06:38), 1-9 pass as lone digits. A first cell that counts on from the row above is that count.
+            # ponytail: tables only; a numbered list past 9 items still has its 10. checked
+            row = not head and ROW_NO.match(ln)
+            if head or not ln.lstrip().startswith("|"):
+                turn["row_no"] = 0
+            facts = "|" + ln[row.end():] if row and int(row[1]) == turn.get("row_no", 0) + 1 else ln
+            if row:
+                turn["row_no"] = int(row[1])
+            if fence := ln.lstrip().startswith("```"):  # a code fence carries only its language name
+                turn["code"] = not turn.get("code")
+            # a code line is checked by code: the judge cut true SQL lines one by one and left a broken query (eval 2026-11-08)
+            code = turn.get("code") and not fence
+            if fence or not re.search(r"\w", ln) or (not (bad := code_unsourced(ln, known, sources) if code else grounding.unsourced(facts, known))
+                                                    and (head or code or is_label(ln) or judge(sources, ln, "\n".join(kept)))):
                 m = MAP_LINE.match(ln)  # the page draws a map where the line carries "@lat,lon"
                 kept.append(f"{ln} @{geo}" if m and (geo := geocode(m[1])) else ln)  # blank and |---| lines need no check
             else:  # logged like a spoken cut: javis 2026-11-07 showed a panel of only CUT_SHOW, with no trace why
-                log.info("cut a panel line (%s): %s", f"numbers {masked(' '.join(sorted(bad)))}" if bad else "judge", masked(ln))
+                log.info("cut a panel line (%s): %s", f"{'numbers or names' if code else 'numbers'} {masked(' '.join(sorted(bad)))}" if bad else "judge", masked(ln))
                 turn["panel_cut"] = True
         turn["lines"] = len(lines)
         if turn.get("panel", "") != (text := "\n".join(kept + [grounding.CUT_SHOW] * turn.get("panel_cut", 0)).strip()):
@@ -602,11 +705,23 @@ SAY_WORDS = (f"{C.USER_NAME} จากคลังความรู้บีซ
              "ขั้นตอน แผนที่ "  # the panel's [ขั้นตอน] and [แผนที่] line marks
              # pronouns and polite talk: the judge still called ผม / เดี๋ยว new_info now and then and cut a whole line
              "ผม ดิฉัน คุณ ครับ ค่ะ คะ ยินดี ขอบคุณ ขอโทษ เดี๋ยว ขอ ถาม ทราบ รับทราบ เวลา ช่วย ตอนนี้ ก่อน "
+             # log 2026-11-08 12:27 "รับสายแทนลุงจืดอยู่ครับ" (แทน, also 09:17) and the honest "ยังไม่แน่ใจครับ" (แน่ใจ)
+             # were cut as new_info (judge replay 2 of 2 each)
+             # log 2026-11-08 13:29 "มีอะไรให้ช่วยเรื่องโปรแกรมบัญชีไหมครับ" was cut over the question word ไหม (judge replay 2 of 2);
+             # รึเปล่า is the one other question word still left as new (มั้ย หรือเปล่า หรือยัง บ้าง นะ are already filtered)
+             "แทน แน่ใจ ไหม รึเปล่า "
              # what it sells and asks about (the prompt's sales lines are no source): the judge cut "ผมช่วยเรื่อง
              # โปรแกรมบีซีเอไอแอคเคาท์ครับ" over โปรแกรม, and a customer's "ช่วยอะไรได้บ้าง" got silence
              "โปรแกรมบีซีเอไอแอคเคาท์ บีซี เอไอ แอคเคาท์ BC Ai Account การใช้งาน")
 # the judge sorts only the words code found in no source: asked "is this sentence backed?" the 8B model said yes to
 # almost anything (weather, free parking, a made-up email), asked word by word it caught them (20/23 in a replay)
+def is_label(ln):
+    """The first line of a made-up example (ลุงจืด 2026-11-09 "ต้องแสดงตัวอย่างด้วยทุกครั้ง"): no claim, no judge.
+    Not in SAY_WORDS: in the judge's sources it cut small talk, 4/5 -> 3/5 passed every run (eval 2026-11-09)."""
+    # its words, not its exact text: the boss wrote "### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)" (probe 2026-11-09)
+    return C.SAMPLE_LABEL.split()[0] in ln and not grounding.new_words(ln, C.SAMPLE_LABEL)
+
+
 def judge_format(new):  # one entry per new word, those words only: shorter output, none skipped or added
     entry = {"type": "object", "required": ["word", "type", "source_word"], "properties": {
         "word": {"type": "string", "enum": new}, "type": {"type": "string", "enum": ["talk", "same_as_source", "new_info"]},
@@ -622,10 +737,17 @@ JUDGE_ASK = (
     # "สองสาขานี่สต็อกแยกกันหรือใช้ร่วมกันครับ"), a guess or offer is not. Eval on recorded calls: 2 of 19 wrong, was 5
     "Give each of those words a type. talk = a word about the conversation itself (a greeting, polite word, "
     "pronoun, asking, meaning, helping, finding, knowing, checking, being connected: ผม, หมายถึง, เช็ก, ไม่พบ), "
+    # log 2026-11-08 08:59 "สนใจเรื่องไหนเป็นพิเศษครับ", "อยากให้ช่วยเรื่องไหนเป็นพิเศษ" cut; replay 09:04 cut "…เป็นหลักครับ" on เป็นหลัก
+    "a word that only says which part matters more (เป็นพิเศษ, เป็นหลัก), "
     "or a word the assistant uses to ask the user about the user's own side (their shop, work, way of doing "
     "things, stock, branches, bills, problem, wish or feeling) or to react kindly to what the user just said "
     "(เหนื่อยไหม, สาขาไหน, ติดปัญหาตรงไหน, สต็อกแยกกันหรือใช้ร่วมกัน, ช้าตอนพิมพ์, อยากให้ช่วยคำนวณให้เองใช่ไหม, "
-    "เดินทางลำบาก, ยินดีที่ได้รู้จัก, ไม่ต้องรีบ). same_as_source = a Thai reading, other spelling or plain "
+    "เดินทางลำบาก, ยินดีที่ได้รู้จัก, ไม่ต้องรีบ), "
+    # log 2026-11-08 10:12, 10:33: "ในคลังไม่มีตัวเลขจำนวนลูกค้าครับ" was cut and the caller heard CUT_ALL instead;
+    # saying what is not there is the honest answer. A check of 6 lines (2 such, 4 made-up claims): 5 right, was 3
+    "or a word naming what SOURCES do not have, in a sentence that only says SOURCES or the คลัง have no such "
+    "thing and claims nothing else (ในคลังไม่มีตัวเลขจำนวนลูกค้า, ยังไม่มีคิวรี่สำเร็จรูปในคลัง). "
+    "same_as_source = a Thai reading, other spelling or plain "
     "synonym of a word that IS in SOURCES; put that SOURCES word in source_word (แฟล็ก -> flag). "
     # log 2026-11-07 22:02 replays: true panel lines cut for "(Ctrl+S)", "(IA)", "**2)" though the note has Ctrl+S, IA
     "A SOURCES word with brackets, stars or other marks stuck to it is same_as_source too ((Ctrl+S) -> Ctrl+S). new_info = "
@@ -646,6 +768,26 @@ CUT_ALL = "เรื่องนี้ผมยังหาข้อมูลท
 # slips past until it is added here
 STALL = re.compile(r"(ขอ|เดี๋ยว)(ผม)?(ให้(ลูก)?ทีม)?(อ่าน|เปิด|ค้น|ดู|เช็ก|ตรวจ)")
 STALL_NUDGE = "(ระบบ: คุณบอกว่าจะอ่านหรือค้นเพิ่ม แต่ยังไม่ได้สั่งลูกทีม ให้เรียกเครื่องมือตอนนี้เลย หรือตอบจากผลที่ลูกทีมค้นให้แล้ว ห้ามบอกว่าจะอ่านอีก)"
+LAST_ROUND = {"role": "user", "content": "(ระบบ: ค้นครบแล้ว ไม่มีเครื่องมือให้เรียกอีก ตอบผู้โทรจากผลที่ลูกทีมค้นให้แล้วตอนนี้เลย "
+                                         "ถ้าไม่มีส่วนที่ตรง ให้บอกสั้นๆ ว่ายังไม่มีข้อมูลเรื่องนี้)"}
+def plain_turn(messages):
+    """The last round's view of the turn: tool calls dropped and their results put in the user's words, so DeepSeek has
+    no call to copy. With the calls kept it wrote one more as DSML text, offered tools or not (tool_choice "none"
+    too), and with nothing to run the turn ended on CUT_ALL: replay 2026-11-08, 3 of 10 POS asks."""
+    out = []
+    for m in messages:
+        if m["role"] == "tool":
+            m = {"role": "user", "content": f"(ผลที่ลูกทีมค้นให้: {m['content']})"}
+        elif m.get("tool_calls"):
+            if not m["content"]:  # a bare call says nothing: the results follow the question itself
+                continue
+            m = {"role": "assistant", "content": m["content"]}
+        if out and out[-1]["role"] == m["role"] == "user":  # one user message, as the chat template expects
+            m = {"role": "user", "content": f"{out.pop()['content']}\n{m['content']}"}
+        out.append(m)
+    return out
+
+
 BRAIN_DOWN = "ขอโทษครับ ตอนนี้ระบบตอบไม่ได้ชั่วคราว รบกวนถามใหม่อีกครั้งนะครับ"
 # the secretary's own fixed lines: a word a filler already said ("ขอดูภาพจากกล้อง") is no new claim when the answer
 # repeats it. The judge cut "จากภาพตอนนี้เห็นเป็นสีขาวกับวงกลมสีแดงครับ" over ภาพ though the camera saw exactly that
@@ -657,17 +799,23 @@ def judge(sources, piece, before):
     The prompt alone did not hold: the boss added "ต้องระวังเรื่องการจัดส่งและรับชำระ" that no result had."""
     if not (new := grounding.new_words(piece, f"{sources}\n{before}")):
         return True  # every word is a source word: no model call, so most phrases cost nothing
-    ask = JUDGE_ASK.format(src=sources[-C.JUDGE_MAX_CHARS:], before=before[-600:] or "-", piece=piece, new=", ".join(new))
-    try:  # no num_ctx: the same options as look_at_camera, or Ollama reloads the model (~25 s)
-        r = llm.chat(model=C.JUDGE_MODEL, messages=[{"role": "user", "content": ask}], format=judge_format(new),
-                     think=False, keep_alive=-1, options={"temperature": 0})
-        words = json.loads(r.message.content)["words"]
-    except Exception as e:  # no verdict is no check: "ไม่เจอ" beats a guess
-        log.warning("judge failed (%s), treating the piece as unsourced", type(e).__name__)
-        return False
     low = sources.lower()  # a claimed source word must really be there (code checks the model)
-    return bool(words) and all(w["type"] == "talk" or (w["source_word"].strip() and w["source_word"].strip().lower() in low)
-                               for w in words)
+
+    def verdict(src):
+        ask = JUDGE_ASK.format(src=src, before=before[-600:] or "-", piece=piece, new=", ".join(new))
+        try:  # no num_ctx: the same options as look_at_camera, or Ollama reloads the model (~25 s)
+            r = llm.chat(model=C.JUDGE_MODEL, messages=[{"role": "user", "content": ask}], format=judge_format(new),
+                         think=False, keep_alive=-1, options={"temperature": 0})
+            words = json.loads(r.message.content)["words"]
+        except Exception as e:  # no verdict is no check: "ไม่เจอ" beats a guess
+            log.warning("judge failed (%s), treating the piece as unsourced", type(e).__name__)
+            return False
+        return bool(words) and all(w["type"] == "talk" or (w["source_word"].strip() and w["source_word"].strip().lower() in low)
+                                   for w in words)
+    # a long turn's right note can sit before the tail: a would-be cut gets one more look at the source lines nearest
+    # the piece. ponytail: cut candidates only, so the common path keeps Ollama's cached prefix (one more judge call per cut)
+    return verdict(sources[-C.JUDGE_MAX_CHARS:]) or (
+        len(sources) > C.JUDGE_MAX_CHARS and verdict(grounding.near_sources(piece, sources, C.JUDGE_MAX_CHARS)))
 
 
 def worker_chat(messages, tools):
@@ -679,14 +827,22 @@ def worker_chat(messages, tools):
 # ลุงจืด 2026-11-08 "ต้องจัดคำถามให้เหมาะก่อนค้นหา เพราะบางครั้งก็สะกดผิด หรือคนถามสับสน": the caller's raw words found
 # little (STT wrote FIFO as "ไฟโฟ"; "การคำนวณต้นทุนล่ะ" glued to the question before it found depreciation notes)
 # first wording (2026-11-08 check) dragged the last topic into a new question and added terms not asked (FIFO to a lot question)
-SEARCH_ASK = ("เขียนคำค้นคลังความรู้โปรแกรมบัญชี BC สำหรับคำพูดล่าสุดของผู้โทร ตอบคำค้นบรรทัดเดียว 2-6 คำ ไม่ต้องอธิบาย "
-              "แก้คำที่ระบบฟังเสียงเขียนผิดหรือสะกดผิด (ไฟโฟ -> FIFO, พีโอเอส -> POS) คำที่คนไทยพูดทับศัพท์ให้ใส่ทั้งคำไทยและคำอังกฤษ "
+SEARCH_ASK = (f"{C.EXPERT}เขียนคำค้นคลังความรู้โปรแกรมบัญชี BC สำหรับคำพูดล่าสุดของผู้โทร บรรทัดแรกเป็นคำค้น 2-6 คำ ไม่ต้องอธิบาย "
+              "แก้คำที่ระบบฟังเสียงเขียนผิดหรือสะกดผิด (ไฟโฟ -> FIFO, พีโอเอส -> POS, หลอด หรือ รถ ในเรื่องสต็อก -> LOT ล็อต, คิวรี่ คิวลี่ หรือ Q -> query SQL) คำที่คนไทยพูดทับศัพท์ให้ใส่ทั้งคำไทยและคำอังกฤษ "
               "ถ้าผู้โทรถามเรื่องใหม่ ใช้เรื่องใหม่อย่างเดียว ห้ามเอาเรื่องก่อนมาปน เติมเรื่องจากบทสนทนาเฉพาะเมื่อคำพูดล่าสุดไม่บอกว่าถามเรื่องอะไร "
-              "(เช่น \"แล้วยกเลิกล่ะ\") ห้ามใส่คำที่ผู้โทรไม่ได้พูดถึง")
+              "(เช่น \"แล้วยกเลิกล่ะ\") ห้ามใส่คำที่ผู้โทรไม่ได้พูดถึง "
+              "ถ้าคำพูดล่าสุดถามหรือขอเรื่องอื่นที่ไม่ใช่เรื่องที่คุยอยู่ (ระบบอื่นของโปรแกรมเดียวกันก็นับเป็นเรื่องอื่น) "
+              "และผู้โทรไม่ได้พูดเองว่าขอเปลี่ยนเรื่อง (อาจเพราะระบบฟังเสียงผิด) ให้เพิ่มบรรทัดที่สองว่า เปลี่ยนเรื่อง: เรื่องที่คุยอยู่ | เรื่องใหม่ที่ได้ยิน "
+              "ไม่ต้องเพิ่มเมื่อเป็นคำทัก คุยเล่น ขอบคุณ คำตอบที่เลขาถาม หรือคำถามต่อในเรื่องเดิม")
+
+
+# the topic ask is a fixed line (reply), so the next turn reads its two topics back
+TOPIC_ASK = re.compile(r"จะเปลี่ยนไปคุยเรื่อง(.+?) หรือยังคุยเรื่อง(.+?)ต่อครับ")
 
 
 def search_words(history, heard):
     """The caller's words made into a search: misheard words fixed, Thai and English terms, a follow-up made whole.
+    Returns (words, jump): jump is (the topic so far, the new one heard) when the words leave the topic unasked.
     ponytail: one more DeepSeek call before the first word; "" on failure, and the raw words are searched"""
     talk = [f"{'ผู้โทร' if m['role'] == 'user' else 'เลขา'}: {m['content'].partition(C.SCREEN_MARK)[0].strip()[:150]}"
             for m in history[-4:] if m["content"] and not m["content"].startswith(("(", C.SILENT_MARK))]
@@ -695,8 +851,12 @@ def search_words(history, heard):
                                {"role": "user", "content": "\n".join([*talk, f"ผู้โทร (ล่าสุด): {heard}"])}], None)
     except (httpx.HTTPError, ValueError, KeyError) as e:
         log.warning("search words failed (%s)", type(e).__name__)
-        return ""
-    return " ".join(text.split())[:200]
+        return "", None
+    first, *rest = [line.strip() for line in text.splitlines() if line.strip()] or [""]
+    jump = next(([t.strip() for t in line.partition(":")[2].split("|")] for line in rest if line.startswith("เปลี่ยนเรื่อง")), [])
+    # a first question has no topic to leave
+    jump = tuple(jump) if len(jump) == 2 and all(jump) and any(t.startswith("ผู้โทร:") for t in talk) else None
+    return " ".join(first.split())[:200], jump
 
 
 def load_workers():
@@ -721,17 +881,20 @@ def load_workers():
         C.SYSTEM_PROMPT += "\nงานบนหน้าจอคอมพิวเตอร์ เช่น ดูว่าเปิดโปรแกรมอะไรอยู่ อ่านหน้าต่าง เปิดโปรแกรม กดปุ่ม ให้ส่ง desktop_task ถ้าลูกทีมรายงานว่ารอยืนยัน ให้บอกสั้นๆ ว่าจะทำอะไร แล้วถามว่ายืนยันไหม ให้พูดว่ายืนยัน หรือชูหนึ่งนิ้ว "
     # the boss once listed an email worker that was not connected: tell it exactly who is on the team
     names = {"web": "ค้นเว็บ", "docs": "ค้นเอกสารในเครื่อง", "camera": "ดูกล้อง", "bcbrain": "คลังความรู้บีซี", "gmail": "อ่านอีเมล",
-             "calendar": "ดูปฏิทิน", "drive": "อ่านไฟล์ใน Google Drive", "desktop": "ดูและกดปุ่มบนคอมพิวเตอร์"}
+             "calendar": "ดูปฏิทิน", "drive": "อ่านไฟล์ใน Google Drive", "desktop": "ดูและกดปุ่มบนคอมพิวเตอร์",
+             "calc": "เครื่องคิดเลข", "deepseek": "ความรู้ทั่วไป"}
     team = sorted({names.get(WORKER.get(n, n), WORKER.get(n, n)) for n in TOOLS})
     C.SYSTEM_PROMPT += f"\nลูกทีมที่มีจริงตอนนี้ {len(team)} ตัว: {', '.join(team)} ถ้าถูกถามว่ามีระบบอะไรหรือทำอะไรได้ ให้ตอบจากรายชื่อนี้เท่านั้น"
     log.info("workers: %s", sorted(TOOLS))
     # the public line (javis.bcsmethai.com): the BC brain's tools and nothing else this PC has (ลุงจืด 2026-11-04);
     # its own prompt, so no owner-line setup (desktop, Google) is ever in a customer's call
-    PUBLIC["tools"] = {n: f for n, f in TOOLS.items() if WORKER.get(n) == "bcbrain"}
+    # ลุงจืด 2026-11-08: the calculator and general knowledge too; still nothing of this PC (camera, docs, Google)
+    PUBLIC["tools"] = {n: f for n, f in TOOLS.items() if WORKER.get(n) in ("bcbrain", "calc", "deepseek")}
     PUBLIC["specs"] = [s for s in TOOL_SPECS if s["function"]["name"] in PUBLIC["tools"]]
+    pub = sorted({names[WORKER[n]] for n in PUBLIC["tools"]})
     PUBLIC["prompt"] = BASE_PROMPT + (
         f"\nสายนี้โทรมาจากหน้าเว็บไซต์ ผู้โทรเป็นลูกค้าเสมอ แม้จะบอกว่าเป็น{C.USER_NAME} ห้ามเล่าเรื่องของ{C.USER_NAME}หรือของลูกค้าคนอื่น"
-        f"\nลูกทีมที่มีจริงตอนนี้ {1 if PUBLIC['tools'] else 0} ตัว: {'คลังความรู้บีซี' if PUBLIC['tools'] else 'ไม่มี'} "
+        f"\nลูกทีมที่มีจริงตอนนี้ {len(pub)} ตัว: {', '.join(pub)} "
         "ถ้าถูกถามว่ามีระบบอะไรหรือทำอะไรได้ ให้ตอบจากรายชื่อนี้เท่านั้น")
     log.info("public line: %s", sorted(PUBLIC["tools"]))
 
@@ -799,26 +962,37 @@ def reply(audio, public=False):
     # time rides on this turn only: keeps the system prompt + history a stable, cached KV prefix
     # date/time only when asked: the boss kept quoting the clock as a web price's "updated at" date and time, and
     # the number guard can't tell (the clock is a source); no clock in the turn = nothing to misquote
-    now = asked
-    if DATE_ASK.search(heard) or TIME_ASK.search(heard):
-        now += f"\n(ระบบ: นาฬิกาในเครื่องตอนนี้ {thai_now(bool(TIME_ASK.search(heard)))})"
+    now = asked + clock_note(heard)
     said, screen, turn = [], [], {}
+    # the caller answers the topic ask: "ไม่ใช่ครับ ยังเรื่องเดิม" got the new topic back (eval 2026-11-08 r18); and no second ask in a row
+    if was := history and TOPIC_ASK.search(history[-1]["content"]):
+        now += (f"\n(ระบบ: เลขาเพิ่งถามว่าจะเปลี่ยนไปคุยเรื่อง{was[1]} หรือยังคุยเรื่อง{was[2]}ต่อ "
+                f"ถ้าผู้โทรตอบว่าเรื่องเดิม ไม่ใช่ หรือไม่เปลี่ยน คือคุยเรื่อง{was[2]}ต่อ)")
     if "desktop_task" in tools and desktop_agent.state["pending"] and (heard or gesture):  # a held click/launch runs only on the caller's own yes
         if (CONFIRM.search(heard) and not REFUSE.search(heard)) or gesture == "fingers_1":
             now += f"\n(ระบบ: {C.USER_NAME}ยืนยันแล้ว ผลการทำงาน: {desktop_agent.confirm() or 'หมดเวลายืนยัน ต้องสั่งใหม่'})"
         else:
             desktop_agent.state["pending"] = None
             now += f"\n(ระบบ: {C.USER_NAME}ไม่ได้ยืนยัน งานที่รอไว้ถูกยกเลิก)"
+    # a BC note read for this question: the answer explains it, so it ends with an example and starts with calc
+    # (ลุงจืด 2026-11-09 "ต้องแสดงตัวอย่างด้วยทุกครั้ง"). ponytail: one more boss round before the first word on
+    # every BC answer; asked by how-words only, "แล้วต้นทุนแบบไฟโฟล่ะ" got no calc and every example row was cut
+    read = False
     if "look_at_camera" in tools and CAMERA_ASK.search(heard):  # see first, so the answer can only come from the real frame
         now += f"\n(ผลจาก look_at_camera ตอนนี้: {(yield from dispatch([('look_at_camera', {'question': heard})], said, turn, tools))[0]})"
     elif "web_search" in tools and LATEST_ASK.search(heard):  # changes daily: only a fresh search may answer it
         now += f"\n(ผลจาก web_search ตอนนี้: {(yield from dispatch([('web_search', {'query': heard})], said, turn, tools))[0]})"
+    elif heard and (wording := search_words(history, heard))[1] and not was:  # off the topic, maybe misheard: ask, search nothing
+        topic, new = wording[1]
+        log.info("topic jump? %s -> %s", topic, new)  # the log watcher learns from these
+        # a fixed line, no boss: it once added "เพย์โรล" and the judge cut the whole ask (eval 2026-11-08 r17)
+        turn["ask"] = f"ขอถามให้ชัดก่อนครับ จะเปลี่ยนไปคุยเรื่อง{new} หรือยังคุยเรื่อง{topic}ต่อครับ"
     elif heard:  # BC brain + local docs search together before the boss speaks (~0.1 s, no filler needed)
         # ponytail: docs/ chunks ride along on every question; trim or gate them if a big docs/ slows the first word
         # a short follow-up searched alone found nothing ("เว็บ" after a question about the website): add the
         # caller's previous words. Ceiling: a 20-character cut; the boss can still search again itself
         # first the boss's own reading of the words (search_words); the old glue-and-spell rules only if that fails
-        if not (query := search_words(history, heard)):
+        if not (query := wording[0]):
             last = next((m["content"].splitlines()[0] for m in reversed(history) if m["role"] == "user" and m["content"]), "")
             query = f"{last} {heard}" if len(heard) < 20 and last and not last.startswith("(") else heard
             query = " ".join([query, *grounding.acronyms(query)])  # Whisper writes "ระบบ POS" as ระบบพีโอเอส; notes say POS
@@ -838,20 +1012,33 @@ def reply(audio, public=False):
                     calls.append(("read_note", {}))
                     texts.append(part if k == 0 else part[:1500])
         found = " ".join(f"[{n}] {t}" for (n, _), t in zip(calls, texts))
-        now += (f"\n(ระบบ: ลูกทีมค้นให้แล้ว {found} ใช้เฉพาะส่วนที่ตรงกับคำถามจริงๆ "
+        read = any(n == "read_note" for n, _ in calls)
+        now += (f"\n(ระบบ: คำพูดนี้น่าจะหมายถึง {query} ลูกทีมค้นให้แล้ว {found} ใช้เฉพาะส่วนที่ตรงกับคำถามจริงๆ "
                 # 2026-11-08 04:08 call: "ไม่พบเรื่อง…ในคลังความรู้บีซีครับ หมายถึงอะไรครับ" 4 times, never a second search
                 "ถ้าไม่มีส่วนไหนตรง ให้ค้นเองอีกครั้งด้วยคำอื่นก่อน (search_brain คำไทยหรือคำอังกฤษ หรือ web_search) "
-                "ถ้ายังไม่เจอจึงบอกสั้นๆ ว่ายังไม่มีข้อมูลเรื่องนี้ แล้วถามว่าหมายถึงเรื่องไหน ห้ามตอบจากความจำ)")
+                # 2026-11-08 05:16: asked for a worked example, it said "ยังไม่มีในคลัง" twice
+                "ถ้ายังไม่เจอและเป็นความรู้ทั่วไปที่ไม่ใช่เรื่อง BC ให้ถาม general_knowledge ถ้าเป็นเรื่อง BC จึงบอกสั้นๆ ว่ายังไม่มีข้อมูล "
+                "แล้วถามว่าหมายถึงเรื่องไหน ถ้าขอตัวอย่างหรือให้คิดเลข ให้ตั้งตัวเลขสมมติตามสูตรในผลค้นแล้วคิดด้วย calc ห้ามตอบจากความจำ "
+                # the system prompt's example rule alone: both eval runs' first answers had none (2026-11-09)
+                f"คำตอบที่อธิบายเรื่องนี้ ต่อท้าย [จอ] ด้วยบรรทัด {C.SAMPLE_LABEL} แล้วตารางตัวอย่างที่ทุกตัวเลขมาจากผล calc)")
     messages = [{"role": "system", "content": prompt}, *history, {"role": "user", "content": now.strip()}]
     known = grounding.numbers(" ".join(m["content"] for m in messages[1:]))  # every number a source gave this turn
     try:
-        for rnd in range(C.MAX_TOOL_ROUNDS + 1):
+        if ask := turn.get("ask"):
+            log.info("BOT  (topic ask): %s", masked(ask))
+            said.append(ask)
+            yield (C.TTS_SAMPLE_RATE, speak(ask)), AdditionalOutputs({"kind": "bot", "text": ask})
+        for rnd in range(0 if ask else C.MAX_TOOL_ROUNDS + 1):
             calls = []
             # what the judge may accept: this turn's question, prefetch and tool results, earlier turns, and what
             # load_workers said is true of this setup (Google not connected, the team); fixed within a round so
             # Ollama reuses its cached prefix
             sources = "\n".join([*(m["content"] for m in messages[1:]), prompt.removeprefix(BASE_PROMPT), OWN_WORDS])
-            tokens = llm_tokens(messages, calls, specs if rnd < C.MAX_TOOL_ROUNDS else None)
+            # an example starts with calc, so the numbers it shows have a source; an off-topic turn only asks
+            choice = ({"type": "function", "function": {"name": "calc"}}
+                      if rnd == 0 and "calc" in tools and (EXAMPLE_ASK.search(heard) or read) else None)
+            last = rnd == C.MAX_TOOL_ROUNDS  # the note rides on this call only, never kept in the history
+            tokens = llm_tokens(plain_turn(messages + [LAST_ROUND]) if last else messages, calls, None if last else specs, choice)
             said_before, mark = len(said), time.perf_counter()  # mark: where each phrase's own time starts
             for chunk in chunk_sentences(until_screen(tokens, screen)):
                 if C.SILENT_MARK in chunk:  # the words were for someone else in the room: no answer at all
@@ -859,6 +1046,12 @@ def reply(audio, public=False):
                     turn["silent"] = True
                     break
                 if text := clean(chunk):
+                    # log 2026-11-08 13:16: 28 of 92 lines were a bare "ขอโทษครับ" opener, all a talked-over caller
+                    # heard, and the history kept it as the whole reply, so the boss copied it (replay with 18 history
+                    # messages: 3 of 3). ลุงจืด OK'd dropping it; the rest is said, nothing said falls to CUT_ALL
+                    if not said and text == "ขอโทษครับ":
+                        log.info("dropped a bare opener: ขอโทษครับ")
+                        continue
                     got = time.perf_counter()
                     # ห้ามแต่ง: a phrase with an unsourced number or fact is dropped; one line at the end says so
                     if bad := grounding.unsourced(text, known):
@@ -892,7 +1085,11 @@ def reply(audio, public=False):
             texts = yield from dispatch([(c["name"], c["args"]) for c in calls], said, turn, tools)
             messages += [{"role": "tool", "tool_call_id": c["id"], "content": text} for c, text in zip(calls, texts)]
             known |= grounding.numbers(" ".join(texts))
-        if turn.get("cut") and heard and not said:  # a greeting or reminder just drops the phrase: "not found" fits no hello
+        # a greeting or reminder just drops the phrase: "not found" fits no hello. Nothing said at all went silent
+        # (eval 2026-11-08, 2 of 12 runs, no cut, no error): that too gets the ask-for-more line
+        if heard and not said and not turn.get("silent"):
+            if not turn.get("cut"):
+                log.warning("the boss said nothing (%d rounds)", rnd + 1)
             text = CUT_ALL
             log.info("BOT  (all cut): %s", text)  # logged, so watch_calls.py sees how often it is said
             said.append(text)
@@ -967,7 +1164,6 @@ def warm_up():
     hello = [{"role": "system", "content": C.SYSTEM_PROMPT}, {"role": "user", "content": "สวัสดี"}]
     list(llm_tokens(hello, [], TOOL_SPECS))
     FILLERS.update({name: speak(text) for name, text in FILLER_TEXT.items()})
-    voiceprint(np.zeros(16000, np.float32))  # the first call of a model is the slow one
     log.info("warm-up done in %.1fs", time.perf_counter() - t0)
 
 
@@ -1020,13 +1216,14 @@ class BargeInReplyOnPause(ReplyOnPause):
         return silence >= C.PAUSE_SILENCE_S
 
     def process_audio(self, audio, state):
-        super().process_audio(audio, state)
+        checked = state.pause_detected  # 2026-11-08 23:03: this pause was checked on the frame that found it; every frame
+        super().process_audio(audio, state)  # until the reply starts finds it again (3-8 times a turn)
         # 2026-11-04 15:51:55: 1.2 s of echo or noise passed fastrtc's VAD (100 ms of speech is enough there), its
         # pause killed a four-tool answer mid-search, and the STT then found no speech in it at all: 34 s of silence.
         # The STT's own VAD decides now: what it would not transcribe is no turn and cuts nothing. ~10 ms a pause
-        if state.pause_detected and state.stream is not None and (
-                not (speech := voiced((state.sampling_rate, state.stream))).size or self.hears_itself(state)
-                or self.not_the_caller(state, speech)):
+        if state.pause_detected and not checked and state.stream is not None and (
+                not voiced((state.sampling_rate, state.stream)).size or self.hears_itself(state)
+                or self.just_filler(state)):
             state.pause_detected = state.started_talking = False
             state.stream = None
             EARLY.pop(id(self), None)
@@ -1061,20 +1258,21 @@ class BargeInReplyOnPause(ReplyOnPause):
             log.info("echo of its own voice, not a turn: %s", masked(heard))
         return echo
 
-    caller = None  # this call's voiceprint: the sum of the caller's turns so far
+    # a lone sound with nothing in it was a turn: in the logs of 2026-11-07..08 อืม 8 times, อ่า 2, เอ่อ, คือ, ฮึ, อ่ะ,
+    # หึ, and in the AirPods call 2026-11-08 20:32 นะครับ, เอ่อ, คือ, each cutting the answer off for a bare "ครับ".
+    # A hesitation is never an answer; an อืม is a yes after a question, so it passes over only while the secretary
+    # talks or thinks. ponytail: fixed lists; หืม (huh?), ครับ, ใช่ and หยุด stay turns
+    HESITATIONS = {"เอ่อ", "อ่า", "อ้า", "คือ", "นะ", "นะครับ", "นะคะ"}
+    BACKCHANNELS = {"อืม", "อือ", "ฮึ", "หึ", "อ่ะ", "อะ"}
 
-    def not_the_caller(self, state, speech):
-        """Several people near the mic (ลุงจืด 2026-11-04 "เสียงมีหลายคนพูด": "คุณต่าย คุณต่าย คุณต่าย" from someone
-        else in the room got an answer). The call's first turn is the caller's voice; a later turn in another voice
-        is no turn and cuts nothing off. ponytail: whoever speaks first is the caller; a "this is me" button if
-        someone else keeps getting there first"""
-        if speech.size < C.SPEAKER_MIN_SPEECH_S * 16000:  # ครับ, ใช่: too short to tell voices apart
-            return False
-        e = voiceprint(speech)
-        if self.caller is not None and (score := float(e @ self.caller / self.caller.norm())) < C.SPEAKER_MIN_SCORE:
-            log.info("another voice (%.2f), not the caller: %s", score, masked(early_words(state.stream) or ""))
+    def just_filler(self, state):
+        early = EARLY.get(id(self))  # started 0.25 s into the silence: usually done; none = not checked
+        heard = re.sub(r"[\s.,!?…]+", "", early[1].result()) if early else ""
+        now, length = time.monotonic(), state.stream.size / state.sampling_rate
+        busy = state.responding or any(e + 0.5 > now - length for _, e, _ in self.playing)  # as hears_itself counts it
+        if heard in self.HESITATIONS or (busy and heard in self.BACKCHANNELS):
+            log.info("a lone %s, not a turn", heard)
             return True
-        self.caller = e if self.caller is None else self.caller + e
         return False
 
     def push_turn(self, interrupt):
@@ -1222,7 +1420,6 @@ if __name__ == "__main__":
         raise SystemExit("DEEPSEEK_API_KEY is not set: put it in .env (the boss runs on DeepSeek)")
     llm = ollama.Client(host=C.OLLAMA_HOST)  # the camera and the judge (VISION_MODEL)
     tts = load_tts()
-    voice = load_voice()
     load_mcp_tools()
     load_workers()
     log.info("STT=%s (%s) BOSS=%s VISION=%s TTS=%s", C.STT_MODEL, C.DEVICE, C.DEEPSEEK_MODEL, C.VISION_MODEL, C.TTS_MODEL)
