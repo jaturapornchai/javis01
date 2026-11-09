@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><link rel="stylesheet" href="common.css">
+<style>
+  .logo { position: absolute; left: 0; right: 0; top: 70px; display: flex; flex-direction: column; align-items: center; }
+  .logo .ring { width: 240px; height: 240px; }
+  .word { font-size: 150px; font-weight: 900; line-height: 1; margin-top: 10px; letter-spacing: .02em; }
+  .sub { font-size: 38px; color: #c9d0e6; margin-top: 8px; }
+  .feat { position: absolute; left: 0; right: 0; top: 540px; display: flex; justify-content: center; gap: 30px; }
+  .feat .chip { font-size: 38px; padding: 16px 34px; }
+  .kb { position: absolute; left: 0; right: 0; top: 650px; display: flex; justify-content: center; align-items: center; gap: 26px; font-size: 38px; font-weight: 700; }
+  .kb .arrow { color: var(--cyan); font-size: 50px; }
+  .rules { position: absolute; left: 0; right: 0; top: 770px; display: flex; justify-content: center; gap: 50px; }
+  .stamp { font-size: 48px; font-weight: 900; padding: 10px 40px; border: 5px solid var(--rose); color: #fecdd3; border-radius: 18px; background: rgba(251, 113, 133, .1); }
+</style></head>
+<body>
+<div class="cam" data-cam="0:610 70 700 420; p2-0.3:full; p4-0.2:360 620 1200 300; p4+2.4:full">
+  <div class="logo">
+    <div class="ring a-zoom" style="--at: .2"><i></i><i class="l-spin" style="--at: .2"></i><i class="l-pulse" style="--at: .2"></i></div>
+    <div class="word accent a-up" style="--at: .6">javis</div>
+    <div class="sub a-fade" style="--at: 1.4">จาร์วิส · เลขาเสียงภาษาไทย</div>
+  </div>
+  <div class="feat">
+    <span class="chip chip-cyan a-pop" style="--at: calc(var(--p2) + .3)">🎙️ เสียงภาษาไทย</span>
+    <span class="chip chip-violet a-pop" style="--at: calc(var(--p2) + 1.4)">⚡ คุยได้ทันที</span>
+    <span class="chip chip-cyan a-pop" style="--at: calc(var(--p2) + 2.6)">✋ พูดแทรกได้ เหมือนโทรศัพท์</span>
+  </div>
+  <div class="kb">
+    <span class="card a-left" style="--at: calc(var(--p3) + .2); padding: 14px 30px">📚 คลังความรู้</span>
+    <span class="arrow a-fade" style="--at: calc(var(--p3) + .8)">➜</span>
+    <span class="card card-glow a-right" style="--at: calc(var(--p3) + 1.1); padding: 14px 30px">โปรแกรมบัญชี <span class="accent">BC AI Account</span></span>
+  </div>
+  <div class="rules">
+    <span class="stamp a-drop" style="--at: calc(var(--p4) + .3)">ห้ามเดา</span>
+    <span class="stamp a-drop" style="--at: calc(var(--p4) + 1)">ห้ามแต่งข้อมูล</span>
+  </div>
+</div>
+<script src="common.js"></script>
+</body></html>

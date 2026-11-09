@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><link rel="stylesheet" href="common.css">
+<style>
+  .sql { position: absolute; z-index: 6; left: 0; right: 0; top: 200px; margin: auto; width: 1180px; }
+  .sql .rule { display: flex; align-items: center; gap: 22px; font-size: 40px; font-weight: 700; margin-top: 26px; }
+  .sql .rule b { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; font-size: 38px; flex: none; }
+  .shade { position: absolute; inset: 0; z-index: 5; background: rgba(5, 8, 22, .72); }
+</style></head>
+<body>
+<!-- t2 take 59.0 -> 69.6 then frozen: caller line l3 at t 0.1-3.2, the honest "no query in the knowledge base" line is on the page subtitle at t 10.6 -->
+<div class="footage"><div class="cam" data-cam="0:full; 1.2:team; p3+0.2:subs"><img class="cap" alt=""></div></div>
+<div class="live a-fade"><b class="l-pulse"></b>สายจริง · บันทึกจากหน้าจอ</div>
+<div class="a-out" style="--at: calc(var(--p2) - .3)"><div class="said a-up" style="--at: .2"><small>ลูกค้าพูด</small>ขอคิวรี่ดูต้นทุนเฉลี่ยของสินค้าแต่ละตัวหน่อยครับ</div></div>
+<div class="a-out" style="--at: calc(var(--p3) - .2); position: absolute; inset: 0">
+  <div class="shade a-fade" style="--at: calc(var(--p2) - .2)"></div>
+  <div class="sql card card-glow a-zoom" style="--at: var(--p2)">
+    <div class="eyebrow">SQL บนจอ</div>
+    <div class="rule a-left" style="--at: calc(var(--p2) + 1.4)"><b style="background: rgba(52, 211, 153, .18); color: var(--emerald)">✔</b>ใช้ชื่อตารางจากผลค้นคลังความรู้เท่านั้น</div>
+    <div class="rule a-left" style="--at: calc(var(--p2) + 2.6)"><b style="background: rgba(251, 113, 133, .18); color: var(--rose)">✖</b>ไม่แต่งชื่อตาราง ไม่แต่งคิวรี่เอง</div>
+  </div>
+</div>
+<div class="callout a-pop" style="--at: calc(var(--p3) + 1.3); left: 0; right: 0; margin: auto; width: fit-content; top: 330px; border-color: var(--emerald)">ในคลังยังไม่มี → บอกตรง ๆ ว่าไม่มี ▼</div>
+<script src="common.js"></script>
+</body></html>

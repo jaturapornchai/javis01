@@ -20,3 +20,6 @@ facebook_post.md
 *.key
 credentials*.json
 token*.json
+# video: generated takes, frames, renders (rebuilt by video/capture.mjs and video/make.mjs)
+video/build/
+video/out/

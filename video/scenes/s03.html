@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><link rel="stylesheet" href="common.css">
+<style>
+  /* until the call connects (take 4.3 = t h) the real page is still dark, so a drawn browser window tells that part */
+  .cover { position: absolute; inset: 0; z-index: 6; background: radial-gradient(60% 45% at 15% 0%, rgba(124, 58, 237, .3), transparent), radial-gradient(50% 40% at 90% 5%, rgba(14, 165, 233, .26), transparent), var(--ink-950); }
+  .win { position: absolute; left: 0; right: 0; top: 80px; margin: auto; width: 1340px; height: 720px; border-radius: 26px; overflow: hidden; background: #0b1024; border: 1px solid rgba(255, 255, 255, .14); box-shadow: 0 40px 120px rgba(0, 0, 0, .6); }
+  .bar { display: flex; align-items: center; gap: 26px; padding: 20px 28px; background: #e9ecf6; color: #10131b; }
+  .bar .dots { display: flex; gap: 10px; } .bar .dots i { width: 18px; height: 18px; border-radius: 50%; background: #c3c9dc; }
+  .bar .url { flex: 1; font-size: 40px; font-weight: 700; padding: 10px 26px; border-radius: 999px; background: #fff; }
+  .perm { position: absolute; left: 60px; top: 130px; width: 640px; padding: 28px 32px; border-radius: 20px; background: #fff; color: #10131b; box-shadow: 0 30px 80px rgba(0, 0, 0, .55); }
+  .perm .t { font-size: 32px; font-weight: 700; } .perm .row { justify-content: flex-end; margin-top: 26px; }
+  .perm .btn { font-size: 28px; font-weight: 700; padding: 12px 30px; border-radius: 999px; background: #e9ecf6; }
+  .perm .btn.ok { background: var(--sky); color: #fff; }
+  .dial { position: absolute; left: 0; right: 0; top: 230px; display: flex; flex-direction: column; align-items: center; gap: 28px; }
+  .dial .ring { width: 220px; height: 220px; }
+</style></head>
+<body>
+<!-- t2 take 0 -> 15.1 (frozen on the first frame until t 4.76): connected at take 4.3, hello from h (9.0), "ผมเป็นเลขา..." to take 10.2 -->
+<div class="footage"><div class="cam" data-cam="0:full; h-0.1:hud; h+2:subs"><img class="cap" alt=""></div></div>
+<div class="live a-fade"><b class="l-pulse"></b>สายจริง · บันทึกจากหน้าจอ</div>
+<div class="cover a-out" style="--at: calc(var(--h) - .5)">
+  <div class="win a-zoom" style="--at: .1">
+    <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="url">🔒 <span class="a-wipe" style="--at: .6; display: inline-block">javis.bcsmethai.com</span></span></div>
+    <div class="a-out" style="--at: calc(var(--p3) - .1)"><div class="perm a-down" style="--at: calc(var(--p2) + .5)">
+      <div class="t">🎤 javis.bcsmethai.com ขอใช้ไมโครโฟน</div>
+      <div class="row"><span class="btn">ไม่อนุญาต</span><span class="btn ok l-pulse" style="--at: calc(var(--p2) + 1.4)">อนุญาต</span></div>
+    </div></div>
+    <div class="dial">
+      <div class="ring a-zoom" style="--at: var(--p3)"><i></i><i class="l-spin" style="--at: var(--p3)"></i><i class="l-pulse" style="--at: var(--p3)"></i></div>
+      <div class="h3 a-up" style="--at: calc(var(--p3) + .4)">กำลังต่อสาย…</div>
+    </div>
+  </div>
+  <div class="chip chip-violet a-pop" style="--at: calc(var(--p2) + 1.2); position: absolute; right: 150px; top: 380px; font-size: 32px">ขอแค่ครั้งแรก</div>
+</div>
+<div class="a-out" style="--at: calc(var(--h) + 2)"><div class="callout a-left" style="--at: calc(var(--h) + .5); left: 820px; top: 600px">javis ทักทายก่อนเลย ▶</div></div>
+<script src="common.js"></script>
+</body></html>

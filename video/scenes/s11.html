@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><link rel="stylesheet" href="common.css">
+<style>
+  .tile { position: absolute; width: 780px; height: 340px; display: flex; align-items: center; gap: 36px; }
+  .tile .icon { width: 150px; height: 150px; font-size: 80px; border-radius: 36px; flex: none; }
+  .tile .h3 { font-size: 46px; }
+</style></head>
+<body>
+<div class="cam" data-cam="0:full; p2-0.2:160 150 780 340; p3-0.2:980 150 780 340; p4-0.2:160 530 780 340; p5-0.2:980 530 780 340; p5+1.8:full">
+  <div class="eyebrow a-fade" style="--at: .2; position: absolute; left: 0; right: 0; top: 70px; text-align: center">ยังมีอีก</div>
+  <div class="tile card a-pop" style="--at: calc(var(--p2) - .1); left: 160px; top: 150px"><div class="icon">📞</div><div><div class="h3">รับได้ <span class="accent">3 สาย</span> พร้อมกัน</div></div></div>
+  <div class="tile card a-pop" style="--at: calc(var(--p3) - .1); left: 980px; top: 150px"><div class="icon">🧠</div><div><div class="h3">โทรกลับ จำเรื่องเดิมได้</div><div class="body">เมื่อโทรจากเบราว์เซอร์เดิม</div></div></div>
+  <div class="tile card a-pop" style="--at: calc(var(--p4) - .1); left: 160px; top: 530px"><div class="icon">📱</div><div><div class="h3">ใช้บนมือถือได้</div></div></div>
+  <div class="tile card a-pop" style="--at: calc(var(--p5) - .1); left: 980px; top: 530px"><div class="icon">⌨️</div><div><div class="h3">พิมพ์แชทแทนการพูด</div></div></div>
+</div>
+<script src="common.js"></script>
+</body></html>

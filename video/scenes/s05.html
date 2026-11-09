@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><link rel="stylesheet" href="common.css">
+<style>
+  .two { position: absolute; z-index: 6; left: 0; right: 0; top: 260px; display: flex; justify-content: center; gap: 40px; }
+  .two .card { font-size: 46px; font-weight: 800; padding: 28px 48px; }
+</style></head>
+<body>
+<!-- t2 take 31.5 -> 35.2 then frozen: the l1 answer is spoken and the panel and cards are full -->
+<div class="footage"><div class="cam" data-cam="0:full; p2:subs; p3:ptop; p4:cards"><img class="cap" alt=""></div></div>
+<div class="live a-fade"><b class="l-pulse"></b>สายจริง · บันทึกจากหน้าจอ</div>
+<div class="a-out" style="--at: calc(var(--p2) - .1)"><div class="two">
+  <div class="card card-glow a-left" style="--at: .4">① พูดสรุปสั้น ๆ</div>
+  <div class="card card-glow a-right" style="--at: 1"><span class="accent">② รายละเอียดเต็มบนจอ</span></div>
+</div></div>
+<div class="a-out" style="--at: calc(var(--p3) - .1)"><div class="callout a-up" style="--at: calc(var(--p2) + .6); left: 0; right: 0; margin: auto; width: fit-content; top: 330px">🔊 พูดสรุปสั้น ๆ แบบเลขา ▼</div></div>
+<div class="a-out" style="--at: calc(var(--p4) - .1)"><div class="callout a-down" style="--at: calc(var(--p3) + .6); right: 90px; top: 60px; border-color: var(--violet-300)">📋 รายละเอียดเต็มบนแผงกลาง</div></div>
+<div class="callout a-left" style="--at: calc(var(--p4) + .6); left: 640px; top: 300px; border-color: var(--emerald)">การ์ดบอกที่มา ▶</div>
+<script src="common.js"></script>
+</body></html>

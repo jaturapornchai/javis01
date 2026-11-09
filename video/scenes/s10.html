@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><link rel="stylesheet" href="common.css">
+<style>
+  .head { position: absolute; left: 0; right: 0; top: 70px; text-align: center; }
+  .use { position: absolute; top: 220px; width: 530px; height: 560px; display: flex; flex-direction: column; gap: 16px; }
+  .use .icon { width: 110px; height: 110px; font-size: 60px; }
+  .use .h3 { margin-top: 6px; }
+  .step { display: flex; align-items: center; gap: 16px; font-size: 32px; font-weight: 600; }
+  .step b { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font-size: 26px; background: rgba(34, 211, 238, .16); color: var(--cyan-200); flex: none; }
+  .path { font-size: 27px; color: var(--cyan-200); padding: 12px 18px; border-radius: 12px; background: rgba(34, 211, 238, .08); border: 1px solid rgba(34, 211, 238, .35); }
+  .note { position: absolute; left: 0; right: 0; top: 800px; text-align: center; }
+  .note .chip { font-size: 34px; padding: 14px 34px; }
+</style></head>
+<body>
+<div class="cam" data-cam="0:460 40 1000 260; p2-0.3:90 200 570 620; p3-0.3:675 200 570 620; p4-0.3:1260 200 570 620; p5-0.3:full">
+  <div class="head"><div class="h2 a-zoom" style="--at: .2">เอาไปช่วยงาน<span class="accent">อะไรได้บ้าง?</span></div></div>
+  <div class="use card a-up" style="--at: calc(var(--p2) - .5); left: 110px">
+    <div class="icon">🎧</div><div class="h3">คอลเซ็นเตอร์</div>
+    <div class="step a-left" style="--at: calc(var(--p2) + 1)"><b>1</b>รับสายแรกแทน</div>
+    <div class="step a-left" style="--at: calc(var(--p2) + 2.6)"><b>2</b>ตอบคำถามที่มีในคลังความรู้</div>
+  </div>
+  <div class="use card a-up" style="--at: calc(var(--p3) - .5); left: 695px">
+    <div class="icon">💼</div><div class="h3">ทีมขาย</div>
+    <div class="body a-fade" style="--at: calc(var(--p3) + .6)">ลูกค้าที่สนใจ จาร์วิสขอทีละอย่าง</div>
+    <div class="step a-left" style="--at: calc(var(--p3) + 2.6)"><b>1</b>ชื่อ</div>
+    <div class="step a-left" style="--at: calc(var(--p3) + 3.2)"><b>2</b>ชื่อร้าน</div>
+    <div class="step a-left" style="--at: calc(var(--p3) + 3.9)"><b>3</b>เบอร์โทร</div>
+    <div class="chip chip-green a-pop" style="--at: calc(var(--p3) + 5.6); width: fit-content">🔁 แล้วอ่านทวนให้ฟัง</div>
+  </div>
+  <div class="use card a-up" style="--at: calc(var(--p4) - .5); left: 1280px">
+    <div class="icon">🛠️</div><div class="h3">ทีมซัพพอร์ต</div>
+    <div class="step a-left" style="--at: calc(var(--p4) + .8)"><b>1</b>ตอบวิธีใช้โปรแกรม</div>
+    <div class="step a-left" style="--at: calc(var(--p4) + 2)"><b>2</b>ขั้นตอนขึ้นบนจอ</div>
+    <div class="path a-wipe" style="--at: calc(var(--p4) + 2.6)">สินค้า › ทะเบียนข้อมูลสินค้าและคลังที่เก็บ › ข้อมูลสินค้า → ช่อง "ประเภทต้นทุน"</div>
+  </div>
+  <div class="note"><span class="chip chip-amber a-pop" style="--at: calc(var(--p5) + .4)">💬 ราคา/โปรโมชันที่ไม่มีในข้อมูล → ไม่รับปากเอง · ให้ลุงจืดติดต่อกลับ</span></div>
+</div>
+<script src="common.js"></script>
+</body></html>

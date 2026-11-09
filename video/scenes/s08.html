@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><link rel="stylesheet" href="common.css">
+<style>
+  .head { position: absolute; left: 0; right: 0; top: 70px; text-align: center; }
+  .ans { position: absolute; left: 90px; top: 290px; width: 640px; }
+  .ans .ln { position: relative; font-size: 34px; font-weight: 600; padding: 16px 20px; border-radius: 14px; margin-top: 14px; background: rgba(255, 255, 255, .04); }
+  .ans .ln .scan { position: absolute; inset: 0; border-radius: 14px; background: rgba(34, 211, 238, .16); border: 2px solid rgba(34, 211, 238, .6); }
+  .ans .ln .bad { position: absolute; inset: 0; border-radius: 14px; background: rgba(251, 113, 133, .2); border: 2px solid var(--rose); }
+  .ans .ln .strike { position: absolute; left: 14px; right: 14px; top: 50%; height: 5px; background: var(--rose); transform-origin: left; }
+  .n { color: var(--cyan-200); font-weight: 800; }
+  .guard { position: absolute; width: 470px; top: 290px; text-align: center; }
+  .guard .icon { width: 120px; height: 120px; font-size: 64px; margin: 0 auto 16px; }
+  .ok { margin-top: 22px; }
+  .tok { position: absolute; left: 0; top: 0; font-size: 40px; font-weight: 900; color: var(--cyan-200); padding: 6px 18px; border-radius: 12px; background: rgba(34, 211, 238, .18); border: 2px solid var(--cyan); }
+</style></head>
+<body>
+<div class="cam" data-cam="0:460 40 1000 300; p2-0.3:full; p4-0.2:60 250 760 470; p4+2.6:full">
+  <div class="head">
+    <div class="h1 a-zoom" style="--at: .2">หัวใจคือ <span class="accent">ห้ามแต่ง</span></div>
+    <div class="h3 a-up" style="--at: 1.3; color: #c9d0e6; margin-top: 10px">ทุกคำตอบผ่านตัวตรวจสองชั้น</div>
+  </div>
+  <div class="ans card a-left" style="--at: calc(var(--p2) - .4)">
+    <div class="eyebrow">คำตอบ (ตัวอย่าง)</div>
+    <div class="ln">ต้นทุนเฉลี่ยถุงละ <span class="n">110</span> บาท<i class="scan a-wipe" style="--at: calc(var(--p3) + .5)"></i></div>
+    <div class="ln">ระบบคิดแบบถัวเฉลี่ยเคลื่อนที่<i class="scan a-wipe" style="--at: calc(var(--p3) + 1.2)"></i></div>
+    <div class="a-out" style="--at: calc(var(--p4) + 2)"><div class="ln">รับรองว่าคุ้มที่สุดในตลาด<i class="bad a-fade" style="--at: calc(var(--p3) + 2)"></i><i class="strike a-strike" style="--at: calc(var(--p4) + .4)"></i></div></div>
+  </div>
+  <div class="guard a-pop" style="--at: var(--p2); left: 790px">
+    <div class="icon" style="background: rgba(34, 211, 238, .12); border-color: var(--cyan)">🔢</div>
+    <div class="h3">ตัวตรวจตัวเลข</div><div class="body">โค้ดเทียบตัวเลขทุกตัว<br>ทั้งคำพูดและบนจอ กับแหล่งที่มา</div>
+    <div class="chip chip-green ok a-pop" style="--at: calc(var(--p2) + 3)">✔ 110 ตรงกับแหล่งที่มา</div>
+  </div>
+  <div class="tok a-travel" style="--at: calc(var(--p2) + 1.3); offset-path: path('M 420 370 C 700 250, 900 250, 1000 560')">110</div>
+  <div class="guard a-pop" style="--at: var(--p3); left: 1340px">
+    <div class="icon" style="background: rgba(124, 58, 237, .2); border-color: var(--violet-300)">🧠</div>
+    <div class="h3">ตัวตรวจความหมาย</div><div class="body">อ่านทุกประโยค<br>ว่ามีที่มารองรับไหม</div>
+    <div class="chip chip-red ok a-pop" style="--at: calc(var(--p4) + .2)">✖ ไม่มีที่มา → ตัดทิ้ง</div>
+  </div>
+</div>
+<script src="common.js"></script>
+</body></html>
