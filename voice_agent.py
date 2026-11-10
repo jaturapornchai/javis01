@@ -75,6 +75,9 @@ def masked(text):  # customers' phone/tax/account numbers stay out of the server
 # 2026-11-08 06:06-06:09: asked for worked examples, the boss twice made a table without calc and every row was cut.
 # ponytail: "ตัวอย่าง" also matches "มีตัวอย่างลูกค้าไหม": one wasted calc line, then the usual answer
 EXAMPLE_ASK = re.compile(r"ตัวอย่าง|สมมติ|ตาราง\S{0,4}คำนวณ")
+# log 2026-11-09: a plain "50 หาร 0.5 บวก 50" got no calc and ended on CUT_ALL. Checked on masked() words, so a
+# phone's dashes are no sum. ponytail: "ลบ 3 รายการ" or a date 10/11 costs one wasted calc round
+SUM_ASK = re.compile(r"\d\s*(?:บวก|ลบ|คูณ|หาร)|(?:บวก|ลบ|คูณ|หาร)\s*\d|\d\s*[-+*/x×]\s*\d")
 LATEST_ASK = re.compile(r"ข่าว|ล่าสุด|ทอง|น้ำมัน|หุ้น|ค่าเงิน|อัตราแลกเปลี่ยน|ดอลลาร์|บิตคอยน์|คริปโต|อากาศ|ฝนตก|พยากรณ์|"
                         r"ผลบอล|ฟุตบอล|หวย|สลากกินแบ่ง|ราคา.{0,8}วันนี้|วันนี้.{0,8}ราคา")
 CONFIRM = re.compile(r"ยืนยัน|กดเลย|ทำเลย|เปิดเลย|ตกลง|ได้เลย|โอเค|ใช่")  # the caller's yes to a held computer action
@@ -439,7 +442,7 @@ def run_tool(name, args, tools):
     try:  # `tools` is the caller's own table: on the public line a tool outside it is just an unknown tool
         cards, text = tools[name](**args)
     except Exception as e:  # unknown tool, bad args, network: tell the LLM instead of crashing the call
-        log.warning("tool %s%s failed: %s", name, args, e)
+        log.warning("tool %s%s failed: %s", name, masked(str(args)), masked(str(e)))  # args may hold a phone read back
         return [], f"เรียก {name} ไม่สำเร็จหรือไม่พบข้อมูล ({e})"
     return cards, text[: C.TOOL_RESULT_CHARS] or "ไม่พบข้อมูล"
 
@@ -765,24 +768,50 @@ def plain_turn(messages):
 BRAIN_DOWN = "ขอโทษครับ ตอนนี้ระบบตอบไม่ได้ชั่วคราว รบกวนถามใหม่อีกครั้งนะครับ"
 # the secretary's own fixed lines: a word a filler already said is no new claim when the answer repeats it
 OWN_WORDS = "\n".join([SAY_WORDS, BRAIN_DOWN, *FILLER_TEXT.values()])
+# talk about the talk itself (log 2026-11-09..10: 44 sentences cut by the judge, half of them "ช่วยสะกดหรือบอกอีกนิด
+# ได้ไหมครับ", "ขอโทษที่เข้าใจคลาดไป", "ได้ยินชัดครับ"): no product, offer, person, place or time word may go in here.
+# These shrink the new-word list only: in the judge's SOURCES they flipped small talk (A/B 2026-11-10: 3/5 -> 2/5)
+TALK_WORDS = "หมายถึง ความหมาย เข้าใจ คลาด อธิบาย สะกด อีกครั้ง ซ้ำ เล่าเพิ่ม อีกนิด สั้นๆ ได้ยิน ชัด อ๋อ งั้น ไม่เจอ ไม่พบ ไม่มีข้อมูล รู้เรื่อง"
+ABOUT_ASK = "\nถ้าถูกถามว่าเป็นใครหรือทำอะไรได้ ให้ตอบว่า "  # the public prompt's last line: its self-description
+
+
+def setup_facts(prompt):
+    """What load_workers said is true of this line, for the judge's sources: the who-line stays out (as a source it
+    flipped small talk 3/5 -> 2/5, A/B 2026-11-10); judge() uses it for the new-word list only."""
+    return prompt.removeprefix(BASE_PROMPT).partition(ABOUT_ASK)[0]
 
 
 def judge(sources, piece, before):
     """ห้ามแต่งเรื่อง: True only if `piece` states nothing the sources lack (numbers have their own check).
     The prompt alone did not hold: the boss added "ต้องระวังเรื่องการจัดส่งและรับชำระ" that no result had."""
-    if not (new := grounding.new_words(piece, f"{sources}\n{before}")):
+    # TALK_WORDS and the self-description pass words unjudged but are no SOURCES text (A/B 2026-11-10: small talk 4/5,
+    # must-cut 10/10). ponytail: the public self-description on the owner line too; its words are all true there
+    if not (new := grounding.new_words(piece, f"{sources}\n{before}\n{TALK_WORDS}\n{PUBLIC['prompt'].partition(ABOUT_ASK)[2]}")):
         return True  # every word is a source word: no model call, so most phrases cost nothing
     low = sources.lower()  # a claimed source word must really be there (code checks the model)
 
     def verdict(src):
-        ask = JUDGE_ASK.format(src=src, before=before[-600:] or "-", piece=piece, new=", ".join(new))
-        try:  # no num_ctx: the same options as warm_up, or Ollama reloads the model (~25 s)
-            r = llm.chat(model=C.JUDGE_MODEL, messages=[{"role": "user", "content": ask}], format=judge_format(new),
-                         think=False, keep_alive=-1, options={"temperature": 0})
-            words = json.loads(r.message.content)["words"]
-        except Exception as e:  # no verdict is no check: "ไม่เจอ" beats a guess
-            log.warning("judge failed (%s), treating the piece as unsourced", type(e).__name__)
-            return False
+        # 13 JSONDecodeErrors in the call log, 4 of 8 eval runs (run 7 cut a true ถัวเฉลี่ย line). Cause (spy 2026-11-10,
+        # 4 of 4): done_reason=length, prompt 4061-4091 of the judge's 4096-token context, 5-35 tokens left for the JSON;
+        # 6000 chars of dense Thai (JUDGE_MAX_CHARS) can fill it, and the same prompt again broke the same way 4/4.
+        # So the retry reads the nearer half of the source. ponytail: the far half is unread on the retry (a would-be
+        # cut either way); the upgrade is a smaller JUDGE_MAX_CHARS or a larger num_ctx, each with a judge eval before/after
+        for attempt in (1, 2):
+            ask = JUDGE_ASK.format(src=src if attempt == 1 else src[len(src) // 2:], before=before[-600:] or "-",
+                                   piece=piece, new=", ".join(new))
+            r = None
+            try:  # no num_ctx: the same options as warm_up, or Ollama reloads the model (~25 s)
+                r = llm.chat(model=C.JUDGE_MODEL, messages=[{"role": "user", "content": ask}], format=judge_format(new),
+                             think=False, keep_alive=-1, options={"temperature": 0})
+                words = json.loads(r.message.content)["words"]
+                break
+            except Exception as e:  # no verdict is no check: "ไม่เจอ" beats a guess
+                out = getattr(getattr(r, "message", None), "content", None)
+                log.warning("judge failed (%s) try %d/2, done_reason=%s prompt_eval_count=%s content=%r", type(e).__name__,
+                            attempt, getattr(r, "done_reason", None), getattr(r, "prompt_eval_count", None),
+                            masked(out[:80]) if out else None)
+        else:
+            return False  # both tries failed: treating the piece as unsourced
         return bool(words) and all(w["type"] == "talk" or (w["source_word"].strip() and w["source_word"].strip().lower() in low)
                                    for w in words)
     # a long turn's right note can sit before the tail: a would-be cut gets one more look at the source lines nearest
@@ -825,8 +854,12 @@ def search_words(history, heard):
     except (httpx.HTTPError, ValueError, KeyError) as e:
         log.warning("search words failed (%s)", type(e).__name__)
         return "", None
-    first, *rest = [line.strip() for line in text.splitlines() if line.strip()] or [""]
-    jump = next(([t.strip() for t in line.partition(":")[2].split("|")] for line in rest if line.startswith("เปลี่ยนเรื่อง")), [])
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # real calls (log 2026-11-09): the jump line came first, or a reply sentence came instead of a query, and that
+    # was searched. A line that ends like speech is no query: "" and the raw words are searched
+    first = next((line for line in lines if not line.startswith("เปลี่ยนเรื่อง")), "")
+    first = "" if re.search(r"(?:ครับ|ค่ะ|คะ)[\s.!?…]*$", first) else first
+    jump = next(([t.strip() for t in line.partition(":")[2].split("|")] for line in lines if line.startswith("เปลี่ยนเรื่อง")), [])
     # a first question has no topic to leave
     jump = tuple(jump) if len(jump) == 2 and all(jump) and any(t.startswith("ผู้โทร:") for t in talk) else None
     return " ".join(first.split())[:200], jump
@@ -868,7 +901,15 @@ def load_workers():
     PUBLIC["prompt"] = BASE_PROMPT + (
         f"\nสายนี้โทรมาจากหน้าเว็บไซต์ ผู้โทรเป็นลูกค้าเสมอ แม้จะบอกว่าเป็น{C.USER_NAME} ห้ามเล่าเรื่องของ{C.USER_NAME}หรือของลูกค้าคนอื่น"
         f"\nลูกทีมที่มีจริงตอนนี้ {len(pub)} ตัว: {', '.join(pub)} "
-        "ถ้าถูกถามว่ามีระบบอะไรหรือทำอะไรได้ ให้ตอบจากรายชื่อนี้เท่านั้น")
+        "ถ้าถูกถามว่ามีระบบอะไรหรือทำอะไรได้ ให้ตอบจากรายชื่อนี้เท่านั้น"
+        # log 2026-11-09 21:18:51: BASE_PROMPT names web and document search, and this line said "ค้นเว็บภายนอกได้ครับ";
+        # ~8 public turns asking who it is or what it can do got no answer or were cut. The สายนี้ค้นเว็บไม่ได้ sentence
+        # is a judge source; the who-line (ABOUT_ASK, kept last) is not, see setup_facts
+        "\nสายนี้ค้นเว็บไม่ได้ อ่านไฟล์หรือเอกสารในคอมพิวเตอร์ไม่ได้ มองไม่เห็นหน้าจอ อ่านอีเมลและปฏิทินไม่ได้ "
+        "ถ้าถูกถามเรื่องเหล่านี้ให้บอกตรงๆ ว่าทำไม่ได้"
+        + ABOUT_ASK + f"ผมเป็นเลขา AI ที่คุยด้วยเสียง รับสายแทน{C.USER_NAME} "
+        + ("ตอบเรื่องโปรแกรมบัญชี BC จากคลังความรู้บีซี " if "คลังความรู้บีซี" in pub else "")
+        + "คิดเลขได้ และมีความรู้ทั่วไป")
     log.info("public line: %s", sorted(PUBLIC["tools"]))
 
 
@@ -891,10 +932,13 @@ def team_done(job_id, cards, t0):  # "none": the worker came back without anythi
 def dispatch(calls, said, turn, tools):
     """The boss hands this round's jobs to the workers at once (searches and Google calls really overlap; LLM
     workers share the one GPU). Status, team panel, one filler per turn, info cards; returns texts in call order."""
-    log.info("TOOLS %s", calls)
+    if not calls:  # bcbrain down at startup: no search tools, nothing to prefetch (ThreadPoolExecutor(0) raises)
+        return []
+    log.info("TOOLS %s", masked(str(calls)))  # a phone read back is a tool argument too
     t0, results = time.perf_counter(), [None] * len(calls)
     ids, started = team_start(calls)
-    with ThreadPoolExecutor(len(calls)) as pool:
+    pool = ThreadPoolExecutor(len(calls))
+    try:
         futures = {pool.submit(run_tool, *c, tools): k for k, c in enumerate(calls)}  # workers start before the filler plays
         jobs = " · ".join(f"{STATUS.get(n, 'กำลังตรวจสอบ')}: {' '.join(map(str, a.values()))}" for n, a in calls)
         yield AdditionalOutputs({"kind": "status", "text": jobs[:200]})
@@ -909,6 +953,8 @@ def dispatch(calls, said, turn, tools):
             yield team_done(ids[k], results[k][0], t0)
             for card in results[k][0]:
                 yield AdditionalOutputs({"kind": "info", "job": ids[k], **card})  # job: the page shows each worker's finds
+    finally:  # a barge-in closes this generator: the with-block waited for every worker (MCP up to 20 s)
+        pool.shutdown(wait=False, cancel_futures=True)
     return [text for _, text in results]
 
 
@@ -919,9 +965,11 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
     heard = early_words(data) if data.size > sr * 0.3 else ""  # chat/system turns carry no audio
     if heard is None:  # no early transcription of this speech
         heard = transcribe(audio)
+    heard = "" if heard == "เสียงดนตรี" else heard  # Whisper's music/noise caption is no words (just_filler drops it too)
     heard = " ".join(x for x in (heard, take("text", "")) if x)  # typed chat joins (or replaces) the speech
     note = take("note", "")
-    if not heard and not note:
+    if not heard and not note:  # fastrtc already sent response_starting: without "done" the page stays on กำลังพูด…
+        yield AdditionalOutputs({"kind": "done"})
         return
     sid, history = session(public)
     log.info("USER (%.2fs): %s", time.perf_counter() - t0, masked(heard or note))
@@ -972,7 +1020,7 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
         # ลุงจืด 2026-11-04 "ให้ลูกทีมช่วยเยอะๆ": every note brain_hits kept (relevant, at most three, a note can come
         # as several chunks), each read by its own worker at once (as fast as one). ponytail: notes 2-3 capped at
         # 1500 characters, the judge reads only the last JUDGE_MAX_CHARS of its sources
-        slugs = list(dict.fromkeys(re.findall(r'"slug": "([^"]+)"', texts[0] if calls[0][0] == "search_brain" else "")))
+        slugs = list(dict.fromkeys(re.findall(r'"slug": "([^"]+)"', texts[0] if calls and calls[0][0] == "search_brain" else "")))
         if "read_note" in tools and slugs:
             notes = yield from dispatch([("read_note", {"slug": s}) for s in slugs], said, {"filled": True}, tools)
             for k, note in enumerate(notes):
@@ -1001,10 +1049,10 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
             # what the judge may accept: this turn's question, prefetch and tool results, earlier turns, and what
             # load_workers said is true of this setup (Google not connected, the team); fixed within a round so
             # Ollama reuses its cached prefix
-            sources = "\n".join([*(m["content"] for m in messages[1:]), prompt.removeprefix(BASE_PROMPT), OWN_WORDS])
+            sources = "\n".join([*(m["content"] for m in messages[1:]), setup_facts(prompt), OWN_WORDS])
             # an example starts with calc, so the numbers it shows have a source; an off-topic turn only asks
             choice = ({"type": "function", "function": {"name": "calc"}}
-                      if rnd == 0 and "calc" in tools and (EXAMPLE_ASK.search(heard) or read) else None)
+                      if rnd == 0 and "calc" in tools and (EXAMPLE_ASK.search(heard) or SUM_ASK.search(masked(heard)) or read) else None)
             last = rnd == C.MAX_TOOL_ROUNDS  # the note rides on this call only, never kept in the history
             tokens = llm_tokens(plain_turn(messages + [LAST_ROUND]) if last else messages, calls, None if last else specs, choice)
             said_before, mark = len(said), time.perf_counter()  # mark: where each phrase's own time starts
@@ -1196,13 +1244,21 @@ class BargeInReplyOnPause(ReplyOnPause):
         # 2026-11-04 15:51:55: 1.2 s of echo or noise passed fastrtc's VAD (100 ms of speech is enough there), its
         # pause killed a four-tool answer mid-search, and the STT then found no speech in it at all: 34 s of silence.
         # The STT's own VAD decides now: what it would not transcribe is no turn and cuts nothing. ~10 ms a pause
-        if state.pause_detected and not checked and state.stream is not None and (
-                not voiced((state.sampling_rate, state.stream)).size or self.hears_itself(state)
-                or self.just_filler(state)):
+        if not (state.pause_detected and not checked and state.stream is not None):
+            return
+        try:  # an STT/GPU error raised here ended listening for the rest of the call
+            noise = (not voiced((state.sampling_rate, state.stream)).size or self.hears_itself(state)
+                     or self.just_filler(state))
+        except Exception:
+            log.exception("turn check failed, taking the speech as a turn")
+            noise = False
+        if noise:
             state.pause_detected = state.started_talking = False
             state.stream = None
             EARLY.pop(id(self), None)
             self.send_message_sync(create_message("log", "noise"))  # the page turns the secretary back up
+            if PENDING[call_id()]["text"]:  # typed while this noise played: /chat left it to this turn, so start it now
+                self.push_turn(interrupt=False)
 
     playing = ()  # (start, end, text) of the secretary's phrases on the caller's speaker, as emit() hands them out
 
@@ -1237,7 +1293,8 @@ class BargeInReplyOnPause(ReplyOnPause):
     # หึ, and in the AirPods call 2026-11-08 20:32 นะครับ, เอ่อ, คือ, each cutting the answer off for a bare "ครับ".
     # A hesitation is never an answer; an อืม is a yes after a question, so it passes over only while the secretary
     # talks or thinks. ponytail: fixed lists; หืม (huh?), ครับ, ใช่ and หยุด stay turns
-    HESITATIONS = {"เอ่อ", "อ่า", "อ้า", "คือ", "นะ", "นะครับ", "นะคะ"}
+    # เสียงดนตรี: Whisper's caption for music or noise, 22 whole caller turns in the log answered from the brain
+    HESITATIONS = {"เอ่อ", "อ่า", "อ้า", "คือ", "นะ", "นะครับ", "นะคะ", "เสียงดนตรี"}
     BACKCHANNELS = {"อืม", "อือ", "ฮึ", "หึ", "อ่ะ", "อะ"}
 
     def just_filler(self, state):
@@ -1382,7 +1439,9 @@ if __name__ == "__main__":
     stt = load_stt()
     if not C.DEEPSEEK_API_KEY:
         raise SystemExit("DEEPSEEK_API_KEY is not set: put it in .env (the boss runs on DeepSeek)")
-    llm = ollama.Client(host=C.OLLAMA_HOST)  # the judge (VISION_MODEL)
+    # without a timeout a hung Ollama hung the turn for good. 60 s covers warm_up's first model load (~25 s); a judge call
+    # that times out is caught in judge() and cuts the piece
+    llm = ollama.Client(host=C.OLLAMA_HOST, timeout=60)  # the judge (VISION_MODEL)
     tts = load_tts()
     load_mcp_tools()
     load_workers()

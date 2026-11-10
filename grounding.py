@@ -16,9 +16,15 @@ from pythainlp.util import text_to_num, thai_digit_to_arabic_digit, thaiword_to_
 
 NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
 # a rate must be a rate in the sources too ("ร้อยละสิบ" passed on a 10 that was a row count); a lone 0-9 is judged
-# only as a rate or an amount (VAT 7%, 5 บาท, ภายใน 7 วัน): bare ones are too common (ชู 2 นิ้ว, ข้อ 3)
-RATE = re.compile(rf"%\s*({NUM.pattern})|({NUM.pattern})\s*(?:%|เปอร์เซ็นต์)|(?<![\d.,])(\d)\s*(?:บาท|ดอลลาร์|วัน|สัปดาห์|เดือน|ปี)")
+# only as a rate or an amount (VAT 7%, 5 บาท, ภายใน 7 วัน): bare ones are too common (ชู 2 นิ้ว, ข้อ 3).
+# The marker carries its kind, "7#" a rate and "7#วัน" a duration: one shared "7#" let ร้อยละสาม pass on a source
+# "3 วัน" and "3%" on "3 เดือน"
+RATE = re.compile(rf"%\s*({NUM.pattern})|({NUM.pattern})\s*(?:%|เปอร์เซ็นต์)|(?<![\d.,])(\d)\s*(บาท|ดอลลาร์|วัน|สัปดาห์|เดือน|ปี)")
 UNIT = {"สิบ": "10", "ร้อย": "100", "พัน": "1000", "หมื่น": "10000", "แสน": "100000", "ล้าน": "1000000"}
+# digits times a unit word: pythainlp dropped the 3 of "3 พันบาท" and kept พัน = 1000, so a made-up 3 พัน passed on a
+# source 1,000 and a true "2 หมื่น" was cut against 20,000; "5ล้าน" came out 51000000. A chain adds up: 3 แสน 5 หมื่น
+# ponytail: a digit right before a word that starts with a unit (3 พันธุ์) is multiplied too; no such line in the log
+DIGIT_UNIT = re.compile(rf"(?:{NUM.pattern}\s*(?:{'|'.join(UNIT)})\s*)+")
 DIGIT_WORDS = "ศูนย์ หนึ่ง สอง สาม สี่ ห้า หก เจ็ด แปด เก้า".split()
 # digits read one by one (a phone number: ศูนย์แปดหนึ่ง...) made pythainlp raise and the whole turn died;
 # a run not followed by a unit word is plain digits (สองศูนย์สามสิบ stays 20 + 30)
@@ -73,9 +79,12 @@ def point_words(m):
 
 
 def numbers(text):
-    """Every number as plain digits; a lone digit only as a rate/amount, marked "7#"."""
+    """Every number as plain digits; a lone digit only as a rate or amount, marked with its kind: "7#", "7#บาท"."""
     toks = []
-    text = re.sub(r"ร้อย\s*ละ", "%", thai_digit_to_arabic_digit(CODE.sub(" ", text)))  # ร้อยละ N = % N, so its ร้อย is no 100
+    # ร้อยละ N = % N, so its ร้อย is no 100. The ";" keeps the number before it off the rate: "ข้อ 3 ร้อยละ 7" read 3%
+    # and lost the 7 (NUM then % matched first), so a true ร้อยละเจ็ด was cut on a source "ปี 2567 ร้อยละ 7"
+    text = re.sub(r"ร้อย\s*ละ", ";%", thai_digit_to_arabic_digit(CODE.sub(" ", text)))
+    text = DIGIT_UNIT.sub(lambda m: f" {sum(Decimal(n.replace(',', '')) * int(UNIT[u]) for n, u in re.findall(rf'({NUM.pattern})\s*({"|".join(UNIT)})', m[0])):f} ", text)
     text = POINT.sub(point_words, text)
     # digits after จุด are pythainlp's own: สิบเอ็ดจุดหกเจ็ด came out 11.067 when the run went first (call 09:50)
     text = DIGIT_RUN.sub(lambda m: m[0] if m.string[: m.start()].rstrip().endswith("จุด") else
@@ -90,7 +99,7 @@ def numbers(text):
     plain = re.sub(rf"({NUM.pattern})\s*บาท\s*(\d{{1,2}})\s*สตางค์", lambda m: f"{m[1]}.{int(m[2]):02d}", " ".join(toks))
     # "50.00" is the 50 that calc gave: eval 2026-11-08 cut three table rows over it. Trailing decimal zeros go
     found = {re.sub(r"\.0+$|(\.\d*?)0+$", r"\1", n.replace(",", "")) for n in NUM.findall(plain)}
-    return {n for n in found if len(n) > 1} | {(a or b or c).replace(",", "") + "#" for a, b, c in RATE.findall(plain)}
+    return {n for n in found if len(n) > 1} | {(a or b or c).replace(",", "") + "#" + u for a, b, c, u in RATE.findall(plain)}
 
 
 def unsourced(text, known):
@@ -238,7 +247,7 @@ if __name__ == "__main__":
     assert phone == {"0811234567"}, phone
     assert not unsourced("เบอร์ศูนย์แปดหนึ่ง หนึ่งสองสาม สี่ห้าหกเจ็ด นะครับ", phone)  # read back: no crash, sourced
     assert unsourced("เบอร์ศูนย์แปดหนึ่ง หนึ่งสองสาม สี่ห้าหกแปด", phone) == {"0811234568"}  # misheard digit
-    assert unsourced("แล้วออกใบใหม่ภายในเจ็ดวันครับ", numbers("ยกเลิก 44 ด้วย flag 45")) == {"7#"}  # a made-up time limit
+    assert unsourced("แล้วออกใบใหม่ภายในเจ็ดวันครับ", numbers("ยกเลิก 44 ด้วย flag 45")) == {"7#วัน"}  # a made-up time limit
     # Thai readings of Latin letters, both ways; ดีที่สุด / เอาไว้ / อีกที are words, not letters
     assert acronyms("ระบบพีโอเอส") == ["POS"] and acronyms("เอาทีวีไปไอที") == ["TV", "IT"] and not acronyms("ดีที่สุด เอาไว้ อีกที")
     assert not new_words("ระบบพีโอเอสครับ", "เมนูระบบ POS ขายหน้าร้าน")  # the judge cut such a source term before
@@ -255,4 +264,16 @@ if __name__ == "__main__":
     assert not new_words("เรียงตาม trans_flag, doc_no, line_number (ปัด HALF_UP)", "เรียงตาม trans_flag doc_no line_number ปัด HALF_UP")
     assert not new_words("ดู [[term-unit-ratio]]", "ดู term-unit-ratio")
     assert new_words("ใช้ฟรีครับ", "ใช้ฟังก์ชันนี้ ครีม") == ["ฟรี"]
+    # digits times a unit word, both ways, and a lone digit known only with its own kind (rate, บาท, วัน ...)
+    assert unsourced("ลด 3 พันบาท", numbers("ลด 1,000 บาท")) == {"3000"} and not unsourced("ลด 2 หมื่นบาท", numbers("20,000"))
+    assert not unsourced("ลด 3,000 บาท", numbers("ลด 3 พันบาท")) and numbers("5ล้าน") == {"5000000"}
+    assert numbers("1.5 ล้าน") == {"1500000"} and not unsourced("3 แสน 5 หมื่น", numbers("350,000"))
+    assert not unsourced("350,000", numbers("3 แสน 5 หมื่น")) and unsourced("3 แสน 6 หมื่น", numbers("350,000")) == {"360000"}
+    assert unsourced("3%", numbers("3 เดือน")) == {"3#"} and not unsourced("3%", numbers("3 เปอร์เซ็นต์"))
+    assert unsourced("3 วัน", numbers("3 บาท")) == {"3#วัน"} and not unsourced("ภายในสามวัน", numbers("3 วัน"))
+    assert unsourced("ร้อยละสาม", numbers("3 วัน")) == {"3#"} and not unsourced("ร้อยละสาม", numbers("3%"))
+    # ร้อยละ N: N is the rate, never the number before it; a real % sign still pairs with the number before it
+    assert numbers("ขั้นที่ 2 ร้อยละ 10") == {"10", "10#"} and not unsourced("ขั้นที่ 2 ร้อยละ 10", numbers("ขั้นที่ 2 อัตราร้อยละ 10"))
+    assert numbers("ข้อ 3 ร้อยละ 7 ต่อปี") == {"7#"} and not unsourced("ร้อยละเจ็ด", numbers("ตั้งแต่ปี 2567 ร้อยละ 7"))
+    assert numbers("ลด 5% 3 รายการ") == {"5#"}
     print("grounding self-test OK")

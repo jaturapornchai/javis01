@@ -55,6 +55,21 @@ va.judge, turn = (lambda sources, piece, before: False), {}
 list(va.panel_events(iter([f"#### {C.SAMPLE_LABEL}\n### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)\n| ขั้น | ทำอะไร |\n"]), [], set(), "", turn))
 va.judge = real_judge
 assert turn["kept"][:2] == [f"#### {C.SAMPLE_LABEL}", "### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)"] and C.SAMPLE_LABEL not in va.OWN_WORDS, turn
+# eval run 7: the judge's JSON was cut off (done_reason=length, its 4K context full); the retry reads the nearer
+# half of the source, a second failure still cuts
+from types import SimpleNamespace as NS
+def fake_llm(replies):
+    def chat(**kw):
+        calls.append(kw["messages"][0]["content"])
+        return NS(message=NS(content=replies.pop(0)), done_reason="length", prompt_eval_count=4090)
+    return NS(chat=chat)
+saved_llm, talk_json = getattr(va, "llm", None), '{"words": [{"word": "x", "type": "talk", "source_word": ""}]}'
+src = "ต้นแหล่งข้อมูล " + "ข้อมูลทั่วไป " * 100 + "ท้ายแหล่งข้อมูล"
+for replies, want in ((['{"words": [', talk_json], True), (['{"words": [', "oops"], False)):
+    calls, va.llm = [], fake_llm(replies)
+    assert va.judge(src, "ระบบเราติดตั้งให้ฟรีถึงร้านครับ", "") is want and len(calls) == 2, (want, len(calls))
+    assert len(calls[1]) < len(calls[0]) and "ท้ายแหล่งข้อมูล" in calls[1] and "ต้นแหล่งข้อมูล" not in calls[1]
+va.llm = saved_llm
 sums = va.calc("รับเข้า 10 ชิ้น: 10*50\n1,200/20\n0.1+0.2\n1000/3\n1/0\n__import__('os')\n2**99999")[1].splitlines()
 assert sums[:4] == ["รับเข้า 10 ชิ้น 10*50 = 500", "1200/20 = 60", "0.1+0.2 = 0.3", "1000/3 = 333.33"], sums  # Decimal, half up
 assert all("คิดไม่ได้" in s for s in sums[4:7]) and len(sums) == 8, sums  # no crash, no code, no power; then the unit line
@@ -79,6 +94,11 @@ assert va.search_words(talk, "รถอัตโนมัติ") == ("LOT อ�
 assert va.search_words([], "รถอัตโนมัติ")[1] is None  # a first question has no topic to leave
 va.worker_chat = lambda messages, tools: ("FIFO ตาราง", [])
 assert va.search_words(talk, "ตารางไฟโฟ") == ("FIFO ตาราง", None)
+# log 2026-11-09: the jump line first, or a reply sentence for a query; neither is searched
+va.worker_chat = lambda messages, tools: ("เปลี่ยนเรื่อง: LOT FIFO | ระบบรถยนต์\nLOT อัตโนมัติ", [])
+assert va.search_words(talk, "รถอัตโนมัติ") == ("LOT อัตโนมัติ", ("LOT FIFO", "ระบบรถยนต์"))
+va.worker_chat = lambda messages, tools: ("ได้เลยครับ เดี๋ยวผมค้นให้นะครับ.", [])
+assert va.search_words(talk, "ตารางไฟโฟ") == ("", None)
 import numpy as np
 def no_boss(*a, **k):
     raise AssertionError("the topic ask called the boss")
@@ -118,7 +138,8 @@ from types import SimpleNamespace as NS
 h = NS(playing=(), HESITATIONS=va.BargeInReplyOnPause.HESITATIONS, BACKCHANNELS=va.BargeInReplyOnPause.BACKCHANNELS)
 for heard, responding, playing, want in (("เอ่อ...", False, (), True), ("นะครับ", False, (), True), ("อืม", False, (), False),
                                           ("อืม", True, (), True), ("อืม", False, ((0, time.monotonic(), "x"),), True),
-                                          ("หืม", True, (), False), ("ขอดูต้นทุน", True, (), False), (None, False, (), False)):
+                                          ("หืม", True, (), False), ("ขอดูต้นทุน", True, (), False), (None, False, (), False),
+                                          ("เสียงดนตรี", False, (), True)):  # Whisper's music caption, 22 turns in the log
     va.EARLY.clear()
     if heard is not None:
         (f := Future()).set_result(heard)
@@ -139,7 +160,46 @@ voiced, va.voiced = va.voiced, (lambda audio: np.ones(8000, np.float32))
 for _ in range(3):
     va.BargeInReplyOnPause.process_audio(h, (16000, np.zeros(320, np.int16)), h.state)
 assert h.state.pause_detected and len(checks) == 1, checks
+def stt_down(state):
+    raise RuntimeError("CUDA error")
+h.just_filler, h.state = stt_down, AppState(stream=np.zeros(16000, np.int16), sampling_rate=16000)
+va.BargeInReplyOnPause.process_audio(h, (16000, np.zeros(320, np.int16)), h.state)
+assert h.state.pause_detected  # an STT error in the check is a turn, not the end of listening
+pushed, va.PENDING[""]["text"] = [], "ขอดูต้นทุน"  # typed while speaking, and the speech was noise: the typed turn starts
+h.just_filler, h.push_turn, h.state = (lambda state: True), (lambda interrupt: pushed.append(interrupt)), AppState(stream=np.zeros(16000, np.int16), sampling_rate=16000)
+va.BargeInReplyOnPause.process_audio(h, (16000, np.zeros(320, np.int16)), h.state)
+assert not h.state.pause_detected and pushed == [False], pushed
+va.PENDING[""]["text"] = ""
 va.voiced = voiced
+# nothing heard (or only Whisper's music caption): the page still gets "done", never stuck on กำลังพูด…
+saved = va.early_words, va.transcribe
+for early in ("", None):
+    va.early_words, va.transcribe = (lambda data, early=early: early), (lambda audio: "เสียงดนตรี")
+    outs = [o.args[0] for o in va.reply((16000, np.zeros(16000)))]
+    assert outs == [{"kind": "done"}], outs
+va.early_words, va.transcribe = saved
+# bcbrain down at startup: no prefetch tools, no ThreadPoolExecutor(0); a barge-in does not wait for the workers
+gen = va.dispatch([], [], {}, {})
+try:
+    next(gen)
+except StopIteration as e:
+    assert e.value == []
+gen, t = va.dispatch([("slow", {})], ["x"], {}, {"slow": lambda: time.sleep(1.5)}), time.perf_counter()
+next(gen)
+gen.close()
+assert time.perf_counter() - t < 1, time.perf_counter() - t
+# log 2026-11-09: a plain sum went without calc; a phone's dashes are no sum
+assert all(va.SUM_ASK.search(va.masked(s)) for s in ("50 หาร 0.5 บวก 50", "120 x 3 เท่าไหร่", "ลบ 7 แล้วเหลือเท่าไหร่"))
+assert not any(va.SUM_ASK.search(va.masked(s)) for s in ("เบอร์ 081-123-4567 ครับ", "ต้นทุนแบบถัวเฉลี่ย", "ลบเอกสารยังไง"))
+# TALK_WORDS: the judge still sees every made-up line, and asks to repeat/spell/explain need no judge
+from eval_talk import MUST_CUT
+assert all(va.grounding.new_words(line, f"{va.OWN_WORDS}\n{va.TALK_WORDS}") for _, line in MUST_CUT)
+for line, term in (("ช่วยสะกดหรือบอกอีกนิดได้ไหมครับ", ""), ("ผมไม่แน่ใจว่าหมายถึงจาวาสคริปต์อะไรครับ", "จาวาสคริปต์"),
+                   ("ผมยังไม่เข้าใจคำว่าแฟลตกับออนเคานต์นี้ ช่วยอธิบายสั้นๆ ได้ไหมครับ", "แฟลต ออนเคานต์")):
+    assert not va.grounding.new_words(line, f"{va.OWN_WORDS}\n{va.TALK_WORDS}\n{term}"), line
+# the who-line is no judge source (A/B 2026-11-10: it flipped small talk 3/5 -> 2/5); the line before it is
+facts = va.setup_facts(va.BASE_PROMPT + "\nสายนี้ค้นเว็บไม่ได้" + va.ABOUT_ASK + "ผมเป็นเลขา AI")
+assert "สายนี้ค้นเว็บไม่ได้" in facts and "เลขา AI" not in facts, facts
 assert va.LONG_NUMBER.sub("", "ร้านสมหญิงวัสดุ เบอร์ 081-123-4567 ค่ะ ปี 2567") == "ร้านสมหญิงวัสดุ เบอร์  ค่ะ ปี 2567"  # no phone to the BC brain
 assert va.LONG_NUMBER.sub("", "เบอร์ ศูนย์ แปด หนึ่ง หนึ่ง สอง สาม สี่ ห้า หก เจ็ด ค่ะ ภาษีสองแบบ") == "เบอร์ ค่ะ ภาษีสองแบบ"
 assert va.clean("**สวัสดี** # ครับ\n- ข้อหนึ่ง") == "สวัสดี ครับ ข้อหนึ่ง"

@@ -28,6 +28,7 @@ button,summary{font:inherit;color:inherit}
 #dev summary{list-style:none}
 #dev summary::-webkit-details-marker{display:none}
 #dev>div{position:absolute;right:0;top:48px;width:min(320px,90vw);padding:12px;display:flex;flex-direction:column;gap:10px;z-index:7}
+#top:has(#dev[open]){z-index:7} /* the popover's own 7 only counts inside #top (fixed = own stacking context), under #note and #hud at 6 */
 #dev .f{display:flex;flex-direction:column;gap:4px;font-size:13px;color:#aab4cc}
 #dev .row{display:flex;align-items:center;gap:8px}
 #dev .row .btn{height:36px;padding:0 12px;font-size:13px;flex:none}
@@ -158,6 +159,7 @@ body.panel #user{font-size:15px}
   #cards{top:auto;bottom:64px;left:8px;right:8px;width:auto;height:118px;flex-direction:row;overflow:auto hidden}
   .turn{flex-direction:row}.turn>h4{display:none}.card{flex:0 0 72vw}
   #top .hint{display:none}#left{display:none}
+  #dev{position:static}#dev>div{position:fixed;left:8px;right:8px;top:64px;width:auto} /* the 320px popover ran off the left edge */
 }
 @media (prefers-reduced-motion:reduce){#teamlist .dot,.card,#bot span,.gt,#panel,.md .fi,.md .flow li,.md tr.in,.md tr.in td{animation:none}}
 </style>
@@ -251,7 +253,7 @@ function onEvent(ev) {
   } else if (ev.kind === "panel") {
     showPanel(String(ev.text ?? ""));
   } else if (ev.kind === "done") {
-    statusText = ""; botLi = null; setState("idle");
+    statusText = ""; botLi = null; setState("idle"); $("remote").volume = 1; // a turn with nothing said leaves it turned down
   }
   ui.list.scrollTop = ui.list.scrollHeight;
 }
@@ -411,7 +413,9 @@ let userMeter = null, botMeter = null;
 setInterval(() => { if (userMeter) userLevel = userMeter(); if (botMeter) botLevel = botMeter(); }, 40);
 
 /* ---------- call ---------- */
-let pc = null, es = null, stream = null, micOn = true, webrtcId = "", demoTimers = [];
+let pc = null, es = null, stream = null, micOn = true, webrtcId = "", demoTimers = [], dropTimer = 0;
+const say = (m) => Object.assign(new Error(m), { name: "say" }); // an error whose Thai message is shown as is
+const WAIT = 'ระบบยังไม่ตอบ รอสักครู่แล้วกด "เริ่มคุย" อีกครั้ง';
 
 // ลุงจืด 2026-11-07 "เพิ่มปุ่ม ปิด/เปิด mic": an off mic sends silence, so the call stays up and the secretary hears no turn
 function setMic(on) {
@@ -514,8 +518,15 @@ $("chat").onsubmit = (e) => {
 async function start() {
   ui.call.disabled = true; notice(""); micTest(false); // the call takes over the mic (and the meter)
   try {
+    if (!navigator.mediaDevices) throw say("เบราว์เซอร์นี้ใช้ไมค์ไม่ได้ ลองเปิดด้วย Chrome หรือ Safari"); // in-app browsers
+    await listDevices().catch(() => {}); // fill the pickers first, or the saved mic is not used when the page starts the call
     const audio = { ...MIC, ...pick("audioinput") };
-    stream = await navigator.mediaDevices.getUserMedia({ audio });
+    stream = await navigator.mediaDevices.getUserMedia({ audio }).catch((e) => {
+      const m = ["NotAllowedError", "SecurityError"].includes(e.name) ? 'ยังใช้ไมค์ไม่ได้ ถ้าเคยกดไม่อนุญาต ให้แตะรูปกุญแจข้างที่อยู่เว็บแล้วเปิดไมโครโฟน จากนั้นกด "เริ่มคุย" อีกครั้ง'
+        : ["NotFoundError", "OverconstrainedError"].includes(e.name) ? 'ไม่พบไมโครโฟนในเครื่องนี้ ต่อไมค์หรือหูฟังแล้วกด "เริ่มคุย" อีกครั้ง'
+        : ["NotReadableError", "AbortError"].includes(e.name) ? 'ไมค์ถูกโปรแกรมอื่นใช้อยู่ ปิดโปรแกรมนั้นก่อน แล้วกด "เริ่มคุย" อีกครั้ง' : null;
+      throw m ? say(m) : e;
+    });
     setMic(true); ui.mic.disabled = false;
     userMeter = analyser(stream);
     await listDevices(); switchDevice("audiooutput").catch(() => notice("เลือกลำโพงไม่ได้ ใช้ลำโพงของระบบแทน"));
@@ -525,7 +536,7 @@ async function start() {
     if (!/^[0-9a-f]{8,32}$/.test(localStorage.getItem("session") || "")) localStorage.setItem("session", hex(8));
     webrtcId = localStorage.getItem("session") + "_" + hex(5);
     // TURN for callers behind NAT (public line only; the owner page on 127.0.0.1 gets a 404 and needs none)
-    pc = new RTCPeerConnection(await fetch("/ice").then((r) => (r.ok ? r.json() : {})).catch(() => ({})));
+    pc = new RTCPeerConnection(await fetch("/ice", { signal: AbortSignal.timeout?.(15000) }).then((r) => (r.ok ? r.json() : {})).catch(() => ({})));
     stream.getAudioTracks().forEach((t) => pc.addTrack(t, stream));
     pc.createDataChannel("text").onmessage = (e) => {
       try { const m = JSON.parse(e.data); if (m.type === "log") onLog(m.data); } catch { /* ignore non-JSON */ }
@@ -533,7 +544,14 @@ async function start() {
     pc.ontrack = (e) => {
       $("remote").srcObject = e.streams[0]; botMeter = analyser(e.streams[0]); playRemote();
     };
-    pc.onconnectionstatechange = () => { if (pc && ["failed", "disconnected"].includes(pc.connectionState)) { notice("การเชื่อมต่อขาดหาย"); hangup(); } };
+    // "disconnected" is often a short network blip that comes back by itself: give it 8 s; "failed" is final
+    const drop = () => { notice('การเชื่อมต่อขาดหาย กด "เริ่มคุย" เพื่อโทรใหม่'); hangup(); };
+    pc.onconnectionstatechange = () => {
+      const st = pc?.connectionState;
+      if (st === "connected") { clearTimeout(dropTimer); dropTimer = 0; }
+      else if (st === "failed") drop();
+      else if (st === "disconnected" && !dropTimer) dropTimer = setTimeout(() => { dropTimer = 0; if (pc && pc.connectionState !== "connected") drop(); }, 8000);
+    };
 
     await pc.setLocalDescription(await pc.createOffer());
     await Promise.race([
@@ -541,11 +559,12 @@ async function start() {
       new Promise((ok) => setTimeout(ok, 3000)),
     ]);
     const { sdp, type } = pc.localDescription;
-    const res = await fetch("/webrtc/offer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sdp, type, webrtc_id: webrtcId }) });
-    const ans = await res.json();
+    // a restarting server answers 502 HTML and a hung tunnel never answers: both are "not answering yet", not a code
+    const ans = await fetch("/webrtc/offer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sdp, type, webrtc_id: webrtcId }), signal: AbortSignal.timeout?.(15000) })
+      .then((r) => r.json().then((a) => (r.ok || a?.status === "failed" ? a : Promise.reject()))).catch(() => { throw say(WAIT); });
     if (ans.status === "failed" || !ans.sdp) {
       const code = ans.meta?.error || ans.error || "unknown";
-      throw new Error(code === "concurrency_limit_reached" ? "มีคนใช้งานอยู่ ลองใหม่ภายหลัง" : `เชื่อมต่อไม่สำเร็จ (รหัส: ${code})`);
+      throw say(code === "concurrency_limit_reached" ? "มีคนใช้งานอยู่ ลองใหม่ภายหลัง" : `เชื่อมต่อไม่สำเร็จ (รหัส: ${code})`);
     }
     await pc.setRemoteDescription(ans);
 
@@ -554,13 +573,13 @@ async function start() {
     setState("listening");
     ui.call.textContent = "วางสาย"; ui.call.className = "btn danger"; ui.call.disabled = false;
   } catch (e) {
-    notice(e.message?.startsWith("มี") || e.message?.startsWith("เชื่อม") ? e.message
-      : e.name === "NotAllowedError" ? 'ยังไม่ได้อนุญาตให้ใช้ไมค์ กด "เริ่มคุย" แล้วกดอนุญาต' : `เริ่มคุยไม่ได้ (${e.name || "error"})`);
+    notice(e.name === "say" ? e.message : `เริ่มคุยไม่ได้ ลองใหม่อีกครั้ง (${e.name || "error"})`);
     hangup();
   }
 }
 
 function hangup() {
+  clearTimeout(dropTimer); dropTimer = 0;
   es?.close(); es = null; pc?.close(); pc = null;
   stream?.getTracks().forEach((t) => t.stop()); stream = null;
   demoTimers.forEach(clearTimeout); demoTimers = [];

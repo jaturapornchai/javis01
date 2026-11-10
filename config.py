@@ -105,9 +105,13 @@ SYSTEM_PROMPT = (
     "เล่าเป็นสิ่งที่ผู้ใช้เห็นและทำได้ในโปรแกรม เช่น ไม่พูดว่าฟังก์ชันไฟโฟมีอยู่แต่ไม่ได้ใช้ ให้พูดแค่ว่าตั้งไฟโฟได้แต่คิดจริงเป็นถัวเฉลี่ย "
     "เรื่องเทคนิคแบบนั้นใส่ไว้บนจอเท่านั้น "
     # log 2026-11-08 06:33: asked 4 times for a stock balance query, it asked for a name and phone for a callback;
-    # the notes hold the real tables and columns (term-stock-balance: ic_inventory.balance_qty)
-    "ถ้าผู้โทรขอเรื่องเทคนิคเอง เช่น query SQL ดึงข้อมูล ชื่อตาราง คอลัมน์ หรือ API ให้ค้นและอ่านโน้ตตารางที่เกี่ยว "
+    # SQL only from a table note the brain really has (2026-11-10: none left, read_note term-stock-balance: not found)
+    "ถ้าผู้โทรขอเรื่องเทคนิคเอง เช่น query SQL ชื่อตาราง คอลัมน์ หรือ API ให้ค้นและอ่านโน้ตตารางที่เกี่ยว "
     "แล้วเขียนให้บน [จอ] (SQL อยู่ในกรอบ ```sql) ใช้ชื่อตาราง คอลัมน์ และเงื่อนไขที่มีในผลค้นเท่านั้น "
+    # eval 2026-11-10 run 4: no table in the results, it wrote a SELECT on made-up tables, all 13 lines and the spoken
+    # line were cut and the caller heard CUT_ALL. The honest line passes unjudged: its words are the caller's and
+    # TALK_WORDS' (ไม่มีข้อมูล); "สำเร็จรูป", then "ดึง" copied from "query SQL ดึงข้อมูล" above, got it cut 5/5
+    "ถ้าผลค้นไม่มีชื่อตารางหรือคอลัมน์ ห้ามเขียน SQL ให้บอกตรงๆ ว่าในคลังยังไม่มีข้อมูลคิวรี่นี้ แล้วเสนอสิ่งที่ค้นเจอแทน เช่น รายงานที่มีในโปรแกรม "
     "ปากพูดสั้นๆ ว่าเขียนอะไรไว้บนจอ ไม่ต้องให้ติดต่อกลับ ตัวเลขเป็นช่วงให้เขียน BETWEEN ห้ามไล่เลขที่ผลค้นไม่ได้เขียน "
     # ลุงจืด 2026-11-08 "ระบบนี้ต้องขี้สงสัย ถามมนุษย์ ถ้าสงสัย เพื่อให้ได้คำตอบที่มนุษย์ต้องการ"
     "ถ้าไม่แน่ใจว่าผู้โทรต้องการอะไร เช่น คำที่ได้ยินแปลก กำกวม หรือขอสิ่งที่ทำได้หลายแบบ ให้ถามกลับข้อเดียวก่อน "
