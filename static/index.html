@@ -73,7 +73,7 @@ button,summary{font:inherit;color:inherit}
 a.card:hover{border-color:#a78bfa;background:rgba(30,27,75,.7)}
 @keyframes cin{from{opacity:0;transform:translateX(60px) rotateY(-28deg)}to{opacity:1;transform:none}}
 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;color:#05070f;font-weight:600}
-.badge.web{background:#60a5fa}.badge.docs{background:#4ade80}.badge.bcbrain{background:#fb923c}.badge.gmail{background:#f87171}.badge.calendar{background:#a78bfa}.badge.drive{background:#facc15}.badge.desktop{background:#2dd4bf}.badge.calc{background:#e879f9}.badge.deepseek{background:#818cf8}.badge.other{background:#9ca3af}
+.badge.web{background:#60a5fa}.badge.docs{background:#4ade80}.badge.bcbrain{background:#fb923c}.badge.gmail{background:#f87171}.badge.calendar{background:#a78bfa}.badge.drive{background:#facc15}.badge.desktop{background:#2dd4bf}.badge.calc{background:#e879f9}.badge.message{background:#34d399}.badge.deepseek{background:#818cf8}.badge.other{background:#9ca3af}
 .card h3{margin:4px 0 2px;font-size:14px;line-height:1.35}
 .card p{margin:0;font-size:12.5px;line-height:1.45;color:#c3cbe0;display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 
@@ -216,7 +216,7 @@ const LABEL = { idle: "พร้อมคุย", listening: "กำลังฟ
 const SPIN = { idle: 0.15, listening: 0.3, thinking: 1.2, searching: 1.2, speaking: 0.5 }; // the HUD's spin per state, its color is CSS
 const SRC = { web: ["เว็บ", 0x60a5fa], docs: ["เอกสารในเครื่อง", 0x4ade80], bcbrain: ["คลังความรู้ BC", 0xfb923c],
   gmail: ["อีเมล", 0xf87171], calendar: ["ปฏิทิน", 0xa78bfa], drive: ["Google Drive", 0xfacc15], desktop: ["คอมพิวเตอร์", 0x2dd4bf],
-  calc: ["เครื่องคิดเลข", 0xe879f9], deepseek: ["ความรู้ทั่วไป", 0x818cf8] };
+  calc: ["เครื่องคิดเลข", 0xe879f9], deepseek: ["ความรู้ทั่วไป", 0x818cf8], message: ["รับฝากข้อความ", 0x34d399] };
 const OTHER_COLOR = 0x9ca3af; // any source string not in SRC
 
 let state = "idle", statusText = "", userLevel = 0, botLevel = 0, panelText = "", panelBlocks = 0;

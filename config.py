@@ -43,6 +43,7 @@ DEEPSEEK_TIMEOUT = 15  # seconds without a byte before the turn gives up
 LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 HISTORY_TURNS = 10  # user+assistant pairs kept per caller session
 SESSIONS_DIR = os.path.join(BASE_DIR, "sessions")  # one <session id>.json per browser, so calls go on where they left off
+LEADS_PATH = os.path.join(SESSIONS_DIR, "leads.jsonl")  # callback requests customers left (leave_message), one JSON per line
 # ห้ามแต่งเรื่อง: checks every spoken phrase and screen line against this turn's sources (numbers: grounding.py).
 # ponytail: VISION_MODEL keeps the camera worker's old name: .env files set it
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", VISION_MODEL)

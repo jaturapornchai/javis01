@@ -2,9 +2,12 @@
 SAY_WORDS / JUDGE_ASK in voice_agent.py). The real boss (DeepSeek), judge and number guard answer scripted
 customer calls through reply_public; voice and STT are stubbed, so it runs beside the live server (it loads no GPU
 model, only the Ollama judge). Prints each call for reading; exit 0 = may deploy, 1 = keep the old words."""
+import json
 import logging
+import os
 import re
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -51,7 +54,10 @@ CALLS = {
                     "ไม่ใช่ครับ ยังเรื่องเดิม", "มันเป็นรถอัตโนมัติไม่ใช่หรอ"],
     # 2026-11-08 06:33: asked 4 times for a stock balance query (STT: "Q", "คิวลี่"), it asked for a phone to call back
     "ขอ query": ["ช่วยสร้างคิวรี่รายงานยอดคงเหลือสินค้าให้หน่อยครับ", "เอายอดรวมทุกคลังครับ"],
+    # 2026-11-11 08:30: a caller left a name and a number for a call back and nothing stored them
+    "ฝากติดต่อกลับ": ["สนใจซื้อโปรแกรมครับ อยากให้ลุงจืดติดต่อกลับ", "ผมชื่อสมชัย ร้านสมชัยการค้าครับ", "เบอร์ 081 234 5678 ครับ"],
 }
+LEAD_PHONE = "0812345678"  # the number that call gives
 KB_CALLS = {"ถามระบบ", "ขอตัวอย่าง", "ตัวอย่าง LOT"}
 NOT_FOUND = re.compile(r"ไม่พบ|ไม่เจอ|ยังไม่มีข้อมูล")
 WRONG_TOPIC = re.compile(r"รถยนต์|ออโต้แคร์|ศูนย์บริการ")  # where "รถอัตโนมัติ" took the talk
@@ -75,6 +81,8 @@ def setup():
     va.load_mcp_tools()
     va.load_workers()
     va.speak = lambda text: np.zeros(10, np.float32)
+    C.LEADS_PATH = os.path.join(tempfile.mkdtemp(), "leads.jsonl")  # the gate never writes ลุงจืด's real list
+    va.notify_owner = lambda: None
     va.FILLERS.update({k: np.zeros(10, np.float32) for k in va.FILLER_TEXT})
 
 
@@ -86,6 +94,14 @@ def check_judge():
     return [f"ตัวตรวจปล่อยประโยคแต่ง: {x}" for x in leaked] + ([f"ตัวตรวจตัดคุยเล่น: {x}" for x in missed] if len(missed) > 2 else [])
 
 
+def lead_phones():
+    try:
+        with open(C.LEADS_PATH, encoding="utf-8") as f:
+            return [va.spoken_digits(json.loads(x)["phone"]) for x in f]
+    except OSError:
+        return []
+
+
 def code_cut(cut):
     """A panel line cut over numbers that are the digits of a code in it (A001 -> 001)."""
     got = re.match(r"cut a panel line \(numbers ([^)]*)\): (.*)", cut)
@@ -94,7 +110,7 @@ def code_cut(cut):
 
 def run_call(name, lines):
     """One scripted call, turn by turn on one history; returns what went wrong."""
-    va.SESSIONS[""], bad, screens, blank = [], [], [], False
+    va.SESSIONS[""], bad, screens, blank, leads = [], [], [], False, lead_phones()
     for _ in va.greet_public():  # every real call opens with the secretary's hello
         pass
     print(f"\n== {name}\n  เลขาทัก: {va.SESSIONS[''][-1]['content'] if va.SESSIONS[''] else '(ไม่ได้ทัก)'}")
@@ -153,7 +169,8 @@ def run_call(name, lines):
     # "ยังไม่มีข้อมูล"). A miss is no SQL and a turn with no real answer.
     # ponytail: when the brain has a table note again, demand SQL here again
     return bad + ([f"{name}: ถามชื่อ {asks} ครั้งในสายเดียว"] if asks > 2 else []) + \
-        ([f"{name}: ขอ query แต่ไม่ได้ทั้ง SQL และคำตอบ"] if name == "ขอ query" and not sql and blank else [])
+        ([f"{name}: ขอ query แต่ไม่ได้ทั้ง SQL และคำตอบ"] if name == "ขอ query" and not sql and blank else []) +         ([f"{name}: ฝากข้อความ {lead_phones()[len(leads):]} ไม่ตรงกับเบอร์ที่ผู้โทรให้"]
+         if lead_phones()[len(leads):] != [LEAD_PHONE] * (name == "ฝากติดต่อกลับ") else [])
 
 
 def main():

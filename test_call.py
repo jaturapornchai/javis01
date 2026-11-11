@@ -55,6 +55,22 @@ va.judge, turn = (lambda sources, piece, before: False), {}
 list(va.panel_events(iter([f"#### {C.SAMPLE_LABEL}\n### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)\n| ขั้น | ทำอะไร |\n"]), [], set(), "", turn))
 va.judge = real_judge
 assert turn["kept"][:2] == [f"#### {C.SAMPLE_LABEL}", "### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)"] and C.SAMPLE_LABEL not in va.OWN_WORDS, turn
+# a customer's message for the owner (2026-11-11): only a number the caller said is stored, the page escapes it all
+C.LEADS_PATH, real_notify, va.notify_owner = os.path.join(tempfile.mkdtemp(), "leads.jsonl"), va.notify_owner, lambda: None
+said = "ผมชื่อสมชัย เบอร์ ศูนย์แปดหนึ่ง 234 5678 ครับ"
+assert va.spoken_digits(said) == "0812345678", va.spoken_digits(said)
+assert "ยังไม่ได้บันทึก" in va.leave_message("สมชัย", phone="081-234-5678", heard="ผมชื่อสมชัยครับ")[1]  # a made-up number
+assert "ยังไม่ได้บันทึก" in va.leave_message("", phone="081-234-5678", heard=said)[1]  # no name
+assert "ยังไม่ได้บันทึก" in va.leave_message("สมชัย", phone="1234", heard="1234")[1] and not os.path.exists(C.LEADS_PATH)
+card, told = va.leave_message("สมชัย", "<b>ร้าน</b>", "081-234-5678", "สนใจซื้อ\nโปรแกรม", heard=said, call="feed_c1")
+assert told.startswith("บันทึกข้อความฝาก") and "081-234-5678" in told and card[0]["source"] == "message", told
+lead = json.loads(open(C.LEADS_PATH, encoding="utf-8").read())
+assert lead["phone"] == "081-234-5678" and lead["call"] == "feed_c1" and lead["message"] == "สนใจซื้อ โปรแกรม", lead
+assert "&lt;b&gt;ร้าน&lt;/b&gt;" in va.leads_page() and "<b>" not in va.leads_page(), va.leads_page()
+for _ in range(3):
+    last = va.leave_message("สมชัย", phone="081-234-5678", heard=said, call="feed_c1")[1]
+assert "ครบ 3 ครั้ง" in last and len(open(C.LEADS_PATH, encoding="utf-8").readlines()) == 3, last  # 3 per call
+va.notify_owner = real_notify
 # eval run 7: the judge's JSON was cut off (done_reason=length, its 4K context full); the retry reads the nearer
 # half of the source, a second failure still cuts
 from types import SimpleNamespace as NS
