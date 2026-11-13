@@ -178,9 +178,9 @@ def new_words(piece, sources):
                             for b in range(max(i + 1, a + 4), min(len(text), a + 12) + 1))
     new, at = [], 0
     for w in word_tokenize(piece, keep_whitespace=False):
-        at = text.find(w.lower(), at)
-        # a mark stuck to a source word is that word: doc_no, -> _no, and [[term-unit-ratio]] were cut
-        if len(w) > 1 and re.search(r"\w", w) and not known(w.strip(EDGE_MARKS) or w) and not all(map(stretch, range(at, at + len(w)))):
+        at, core = text.find(w.lower(), at), w.strip(EDGE_MARKS)
+        # a mark stuck to a source word (doc_no, -> _no, [[term-unit-ratio]]) or a signed digit (+3) is its core
+        if len(core) > 1 and re.search(r"\w", core) and not known(core) and not all(map(stretch, range(at, at + len(w)))):
             new.append(w)
         at += len(w)
     # a near spelling of source text is that word: the 8B judge called the boss's ทันตกรรม new_info three times out of
@@ -276,4 +276,5 @@ if __name__ == "__main__":
     assert numbers("ขั้นที่ 2 ร้อยละ 10") == {"10", "10#"} and not unsourced("ขั้นที่ 2 ร้อยละ 10", numbers("ขั้นที่ 2 อัตราร้อยละ 10"))
     assert numbers("ข้อ 3 ร้อยละ 7 ต่อปี") == {"7#"} and not unsourced("ร้อยละเจ็ด", numbers("ตั้งแต่ปี 2567 ร้อยละ 7"))
     assert numbers("ลด 5% 3 รายการ") == {"5#"}
+    assert not new_words("| ของเกิน | 50 | 53 | +3 | 12 | +36 |", "ของเกิน 53-50 = 3 3*12 = 36")  # signed single-digit calc diff
     print("grounding self-test OK")

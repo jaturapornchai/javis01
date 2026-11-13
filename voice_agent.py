@@ -38,7 +38,7 @@ import uvicorn
 from ddgs import DDGS
 import torch  # before faster_whisper: torch's CUDA DLLs are what lets ctranslate2 find cuBLAS
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastrtc import AdditionalOutputs, ReplyOnPause, SileroVadOptions, Stream, audio_to_float32, get_current_context
 from faster_whisper import WhisperModel
 from faster_whisper.vad import VadOptions, get_speech_timestamps
@@ -261,7 +261,11 @@ def search_docs(query):
             path = os.path.join(root, name)
             if not name.lower().endswith((".txt", ".md", ".csv", ".pdf")) or os.path.getsize(path) > 20_000_000:
                 continue
-            text = read_doc(path)
+            try:
+                text = read_doc(path)
+            except Exception as e:
+                log.warning("skip unreadable doc %s: %s", name, e)
+                continue
             for i in range(0, max(1, len(text)), 800):
                 chunk = text[i:i + 1000]
                 if score := overlap(chunk):
@@ -439,6 +443,8 @@ def leave_message(name="", company="", phone="", message="", heard="", call=""):
     with LEAD_LOCK:
         if LEAD_COUNT[call] >= 3:
             return [], "ยังไม่ได้บันทึกเพิ่ม สายนี้ฝากข้อความครบ 3 ครั้งแล้ว"
+        if call not in LEAD_COUNT and len(LEAD_COUNT) >= 512:
+            LEAD_COUNT.pop(next(iter(LEAD_COUNT)))
         LEAD_COUNT[call] += 1
         first = LEAD_COUNT[call] == 1
         with open(C.LEADS_PATH, "a", encoding="utf-8") as f:
@@ -562,11 +568,15 @@ for h in logging.getLogger().handlers:  # lines logged before this point keep th
 def take(key, empty):
     p = PENDING[call_id()]
     value, p[key] = p[key], empty
+    if len(PENDING) > 256:
+        for k in [k for k, v in list(PENDING.items())[:-128] if not v["text"] and not v["note"]]:
+            PENDING.pop(k, None)
     return value
 
 
 # ---------------------------------------------------------------- the call
 SESSIONS = {}  # session id -> that caller's history (user/assistant pairs), loaded from SESSIONS_DIR on first use
+SESSION_LOCK = threading.Lock()
 SESSION_ID = re.compile(r"[0-9a-f]{8,32}")  # only these name a file: the id comes from the browser
 
 
@@ -576,21 +586,27 @@ def session(public=False):
     Customer sessions live under their own "pub-" names: a public caller can never load an owner-line talk."""
     sid = call_id().split("_")[0]
     sid = (f"pub-{sid}" if public else sid) if SESSION_ID.fullmatch(sid) else ""  # "": warm-up, a throwaway history
-    if sid not in SESSIONS:
-        try:
-            with open(os.path.join(C.SESSIONS_DIR, f"{sid}.json"), encoding="utf-8") as f:
-                SESSIONS[sid] = [m for m in json.load(f) if isinstance(m, dict) and isinstance(m.get("content"), str)]
-        except (OSError, ValueError, TypeError):  # new caller, or a file cut short by a crash
-            SESSIONS[sid] = []
-    return sid, SESSIONS[sid]
+    with SESSION_LOCK:
+        if sid not in SESSIONS:
+            if sid and len(SESSIONS) >= 256:
+                for old in [k for k in SESSIONS if k][:64]:
+                    SESSIONS.pop(old, None)
+            try:
+                with open(os.path.join(C.SESSIONS_DIR, f"{sid}.json"), encoding="utf-8") as f:
+                    SESSIONS[sid] = [m for m in json.load(f) if isinstance(m, dict) and isinstance(m.get("content"), str)]
+            except (OSError, ValueError, TypeError):  # new caller, or a file cut short by a crash
+                SESSIONS[sid] = []
+        return sid, SESSIONS[sid]
 
 
 def save_session(sid, history):
     if sid:  # write then rename: a crash mid-write keeps the previous file
         path = os.path.join(C.SESSIONS_DIR, f"{sid}.json")
-        with open(path + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False)
-        os.replace(path + ".tmp", path)
+        tmp = f"{path}.{threading.get_ident()}.tmp"
+        with SESSION_LOCK:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False)
+            os.replace(tmp, path)
 
 
 # one kept-alive connection: a fresh TLS handshake each call cost ~0.16 s before the first word (measured
@@ -974,7 +990,7 @@ def load_workers():
                                     one_arg("task", "งานที่ต้องทำบนคอมพิวเตอร์ เขียนให้ชัด")))
         STATUS["desktop_task"] = "ลูกทีมกำลังดูคอมพิวเตอร์"
         WORKER["desktop_task"] = "desktop"
-        C.SYSTEM_PROMPT += "\nงานบนหน้าจอคอมพิวเตอร์ เช่น ดูว่าเปิดโปรแกรมอะไรอยู่ อ่านหน้าต่าง เปิดโปรแกรม กดปุ่ม ให้ส่ง desktop_task ถ้าลูกทีมรายงานว่ารอยืนยัน ให้บอกสั้นๆ ว่าจะทำอะไร แล้วถามว่ายืนยันไหม ให้พูดว่ายืนยัน หรือชูหนึ่งนิ้ว "
+        C.SYSTEM_PROMPT += "\nงานบนหน้าจอคอมพิวเตอร์ เช่น ดูว่าเปิดโปรแกรมอะไรอยู่ อ่านหน้าต่าง เปิดโปรแกรม กดปุ่ม ให้ส่ง desktop_task ถ้าลูกทีมรายงานว่ารอยืนยัน ให้บอกสั้นๆ ว่าจะทำอะไร แล้วถามว่ายืนยันไหม ให้พูดว่ายืนยัน "
     # the boss once listed an email worker that was not connected: tell it exactly who is on the team
     names = {"web": "ค้นเว็บ", "docs": "ค้นเอกสารในเครื่อง", "bcbrain": "คลังความรู้บีซี", "gmail": "อ่านอีเมล",
              "calendar": "ดูปฏิทิน", "drive": "อ่านไฟล์ใน Google Drive", "desktop": "ดูและกดปุ่มบนคอมพิวเตอร์",
@@ -1455,6 +1471,39 @@ def ice_servers():
                             "username": user, "credential": key}]}
 
 
+PUBLIC_SITE = "https://javis.bcsmethai.com"
+ROBOTS_TXT = "\n".join([
+    *(f"User-agent: {bot}\nAllow: /" for bot in (
+        "Googlebot", "OAI-SearchBot", "ChatGPT-User", "GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended")),
+    "User-agent: *",
+    "Allow: /",
+    "Disallow: /webrtc/",
+    "Disallow: /outputs",
+    "Disallow: /chat",
+    "Disallow: /ice",
+    "Disallow: /leads",
+    f"Sitemap: {PUBLIC_SITE}/sitemap.xml",
+    "",
+])
+SITEMAP_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    f"  <url><loc>{PUBLIC_SITE}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n"
+    "</urlset>\n"
+)
+LLMS_TXT = (
+    "# Javis — ผู้ช่วยเสียงภาษาไทยสำหรับโปรแกรมบัญชี BC AI Account\n\n"
+    "> เลขาเสียงภาษาไทย AI รับสายแทนลุงจืด คุยโต้ตอบแบบโทรศัพท์ผ่านเบราว์เซอร์ (WebRTC) หรือพิมพ์แชท "
+    "ตอบคำถามการใช้งานโปรแกรมบัญชี BC AI Account และระบบบัญชี SME ไทยจากคลังความรู้บีซี พร้อมคำนวณตัวอย่างด้วย Decimal และรับฝากข้อความติดต่อกลับ\n\n"
+    "## ความสามารถหลักบนสายสาธารณะ\n"
+    "- ตอบคำถามเมนู ขั้นตอนการใช้งาน และวิธีคิดต้นทุน/ภาษีในโปรแกรมบัญชี BC AI Account จากคลังความรู้บีซีโดยไม่แต่งข้อมูล\n"
+    "- คำนวณตัวอย่างประกอบเป็นตารางบนหน้าจอด้วยเครื่องคิดเลขทศนิยมแม่นยำ (Decimal ROUND_HALF_UP)\n"
+    "- รับฝากชื่อ ร้าน/บริษัท เบอร์โทร และเรื่องที่ต้องการให้ลุงจืดติดต่อกลับ\n\n"
+    "## ลิงก์หลัก\n"
+    f"- [หน้าสนทนาหลัก]({PUBLIC_SITE}/): เปิดหน้าเว็บเพื่อเริ่มคุยด้วยเสียงหรือพิมพ์ข้อความได้ทันที\n"
+)
+
+
 def make_app(stream, public=False):
     tools = PUBLIC["tools"] if public else TOOLS
 
@@ -1506,6 +1555,18 @@ def make_app(stream, public=False):
             log.warning("note %s failed: %s", slug, e)
             return JSONResponse({"error": "note unavailable"}, status_code=502)
         return {"text": (NOTE_META.sub("", text) if public else text)[:40000]}  # customers: content, not code paths
+
+    @app.get("/robots.txt")
+    def robots():
+        return PlainTextResponse(ROBOTS_TXT)
+
+    @app.get("/sitemap.xml")
+    def sitemap():
+        return Response(SITEMAP_XML, media_type="application/xml")
+
+    @app.get("/llms.txt")
+    def llms_txt():
+        return PlainTextResponse(LLMS_TXT)
 
     if public:
         app.get("/ice")(ice_servers)

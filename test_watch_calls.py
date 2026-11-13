@@ -25,4 +25,6 @@ assert got[0].startswith(old[11:] + " ab12 "), "date and milliseconds dropped, c
 assert got[-1] == "ValueError: boom"
 assert 290 < w.quiet_for(lines[1]) < 400
 assert w.new_lines(10**9)[0] == lines, "a log trimmed by hand is read again from the start"
+w.LOG = os.path.join(d, "missing.log")
+assert w.offset() == 0 and w.new_lines(0) == ([], 0), "a missing log must not raise"
 print("ok")

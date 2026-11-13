@@ -229,8 +229,15 @@ C.DOCS_DIR = tempfile.mkdtemp()
 C.SESSIONS_DIR = tempfile.mkdtemp()  # the call's session file goes here, not into sessions/
 with open(os.path.join(C.DOCS_DIR, "ร้าน.txt"), "w", encoding="utf-8") as f:
     f.write("ข้อมูลทั่วไป\n" * 200 + "ร้านกาแฟลุงจืด เปิดทุกวัน เวลาเจ็ดโมงเช้าถึงหกโมงเย็น ปิดทุกวันพุธ\n")
+with open(os.path.join(C.DOCS_DIR, "broken.pdf"), "wb") as f:
+    f.write(b"not a pdf")
 cards, _ = va.search_docs("ร้านกาแฟ เวลาเปิด")
 assert cards and "เจ็ดโมง" in cards[0]["snippet"], cards
+pub_app = va.make_app(va.make_stream(True), public=True)
+pub_routes = {getattr(r, "path", None) for r in pub_app.routes}
+assert {"/robots.txt", "/sitemap.xml", "/llms.txt", "/ice"} <= pub_routes and "/leads" not in pub_routes, pub_routes
+assert "Googlebot" in va.ROBOTS_TXT and "OAI-SearchBot" in va.ROBOTS_TXT and "https://javis.bcsmethai.com/sitemap.xml" in va.ROBOTS_TXT
+assert "<loc>https://javis.bcsmethai.com/</loc>" in va.SITEMAP_XML and "BC AI Account" in va.LLMS_TXT
 
 # --- models + server ---------------------------------------------------------------------------------------------
 va.stt = va.load_stt()
@@ -238,9 +245,9 @@ va.llm = ollama.Client(host=C.OLLAMA_HOST)
 va.tts = va.load_tts()
 va.load_mcp_tools()
 va.load_workers()
-# the public line (javis): the BC brain only, in code; this PC's own tools answer as unknown there
+# the public line (javis): BC brain, calc, general knowledge and leave_message only; this PC's own tools stay out
 pub = va.PUBLIC["tools"]
-assert pub and all(va.WORKER[n] == "bcbrain" for n in pub), sorted(pub)
+assert {"calc", "general_knowledge", "leave_message"} <= set(pub) and {va.WORKER[n] for n in pub} <= {"bcbrain", "calc", "deepseek", "message"}, sorted(pub)
 assert {s["function"]["name"] for s in va.PUBLIC["specs"]} == set(pub)
 assert all("ไม่สำเร็จ" in va.run_tool(n, {"query": "x"}, pub)[1] for n in ("search_docs", "web_search", "desktop_task"))
 assert "desktop_task" not in va.PUBLIC["prompt"] and "Gmail" not in va.PUBLIC["prompt"]

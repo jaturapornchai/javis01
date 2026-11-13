@@ -20,11 +20,13 @@ def offset():
         with open(STATE) as f:
             return int(f.read() or 0)
     except (OSError, ValueError):  # first run: start at the end, the old log was read by hand
-        return os.path.getsize(LOG)
+        return os.path.getsize(LOG) if os.path.exists(LOG) else 0
 
 
 def new_lines(start):
     """Whole lines added since `start` and where they end; a log trimmed by hand starts over from 0."""
+    if not os.path.exists(LOG):
+        return [], 0
     if os.path.getsize(LOG) < start:
         start = 0
     with open(LOG, "rb") as f:

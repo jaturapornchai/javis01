@@ -47,7 +47,7 @@ LEADS_PATH = os.path.join(SESSIONS_DIR, "leads.jsonl")  # callback requests cust
 # ห้ามแต่งเรื่อง: checks every spoken phrase and screen line against this turn's sources (numbers: grounding.py).
 # ponytail: VISION_MODEL keeps the camera worker's old name: .env files set it
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", VISION_MODEL)
-JUDGE_MAX_CHARS = int(os.environ.get("JUDGE_MAX_CHARS", "6000"))  # source tail it reads; its context is 4K tokens
+JUDGE_MAX_CHARS = int(os.environ.get("JUDGE_MAX_CHARS", "4500"))  # source tail it reads (~3.4K tokens with JUDGE_ASK, inside 4K ctx)
 
 USER_NAME = "ลุงจืด"  # the boss whose phone the secretary answers
 SAMPLE_LABEL = "ตัวอย่างสมมติ ไม่ใช่ข้อมูลจริง"  # an example's first line, word for word; the judge knows it (SAY_WORDS)
