@@ -7,6 +7,7 @@ node_modules/
 .env
 sessions/
 # local only: scratch, tool output, generated voice, the docs the search worker reads, logs
+models/
 .ttslab/
 .playwright-mcp/
 .claude/

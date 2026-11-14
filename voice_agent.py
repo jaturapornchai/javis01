@@ -1,9 +1,9 @@
 """Local real-time Thai voice assistant (phone-call style secretary).
 
 Browser (static/index.html: mic over WebRTC, SVG status ring)
-    -> FastRTC (Silero VAD pause detection, barge-in) -> faster-whisper Thai (STT)
+    -> FastRTC (Silero VAD pause detection, barge-in) -> OpenThai 2.0 ASR Streaming (CPU ONNX STT)
     -> DeepSeek streaming + tools (web, docs, bcbrain MCP)
-    -> spoken summary -> OmniVoice -> speaker;   details after [จอ] -> on-screen panel
+    -> spoken summary -> F5-TTS-THAI (local human voice) -> speaker;   details after [จอ] -> on-screen panel
 
 Run: python voice_agent.py   then open http://127.0.0.1:7860
 """
@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
@@ -34,23 +35,27 @@ import httpx
 import librosa
 import numpy as np
 import ollama
+import soundfile as sf
 import uvicorn
 from ddgs import DDGS
-import torch  # before faster_whisper: torch's CUDA DLLs are what lets ctranslate2 find cuBLAS
+import torch
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastrtc import AdditionalOutputs, ReplyOnPause, SileroVadOptions, Stream, audio_to_float32, get_current_context
-from faster_whisper import WhisperModel
 from faster_whisper.vad import VadOptions, get_speech_timestamps
 from fastrtc.utils import create_message
-from omnivoice import OmniVoice
-from omnivoice.models.omnivoice import OmniVoiceGenerationConfig
+from huggingface_hub import hf_hub_download
 from pypdf import PdfReader
 
-import config as C
-import desktop_agent
-import grounding
-import google_tools
+warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"f5_tts_th.*")
+from f5_tts_th.normalize import normalize_text  # noqa: E402
+from f5_tts_th.utils_infer import chunk_text, infer_batch_process, load_model as load_f5_model, load_vocoder  # noqa: E402
+
+import config as C  # noqa: E402
+import desktop_agent  # noqa: E402
+import grounding  # noqa: E402
+import google_tools  # noqa: E402
+from openthai_asr import OpenThaiASR  # noqa: E402
 
 # Thai log lines on a cp1252 console/pipe on Windows would raise UnicodeEncodeError.
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -62,6 +67,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # Thai separates phrases with spaces, not punctuation; "." is not a boundary so "1,250.50" stays whole.
 BOUNDARY = re.compile(r"\s")
 SENTENCE_END = re.compile(r"(?:ครับ|ค่ะ|คะ|[!?])\s")  # where a spoken sentence ends: one chunk = one tune
+SENTENCE_TAIL = re.compile(r"(?:ครับ|ค่ะ|คะ|[!?])\s*$")
+DANGLING_HEAD = re.compile(r"^(?:แต่|แล้ว|พร้อม|และ|โดย|ส่วน|หรือ|ซึ่ง|จากนั้น|ต่อมา)")
 JUNK = re.compile(r"<think>.*?</think>|[*#_`~>|\[\]{}]|^\s*[-•]\s*|[\u3040-\u30ff\u4e00-\u9fff]", re.S | re.M)
 # ponytail: keyword route. Things that change daily: these words force a fresh web_search before the brain speaks.
 # a customer's phone read back went to brain.bcsmethai.com as a search (role-play 2026-11-04): such numbers stay
@@ -98,11 +105,7 @@ TH_MONTHS = "มกราคม กุมภาพันธ์ มีนาค�
 
 
 def load_stt():
-    try:
-        return WhisperModel(C.STT_MODEL, device=C.DEVICE, compute_type=C.STT_COMPUTE_TYPE)
-    except Exception as e:  # missing CUDA/cuDNN DLLs etc.
-        log.warning("STT on %s failed (%s) -> falling back to CPU int8", C.DEVICE, e)
-        return WhisperModel(C.STT_MODEL, device="cpu", compute_type="int8")
+    return OpenThaiASR(C.STT_MODEL_DIR, lang=C.STT_LANGUAGE, intra_threads=C.STT_THREADS)
 
 
 def to16k(audio):  # fastrtc frames -> what Whisper and its VAD take
@@ -123,16 +126,15 @@ def stt_hears(audio):
     return voiced(audio).size > 0
 
 
+STT_LOCK = threading.Lock()
+LIVE = {}  # handler id -> {"t": monotonic, "fed": samples, "text": last partial, "busy": bool, "stream": OpenThaiStream}
+
+
 def transcribe(audio):
-    segments, _ = stt.transcribe(
-        to16k(audio),
-        language=C.STT_LANGUAGE,
-        beam_size=C.STT_BEAM_SIZE,
-        vad_filter=True,
-        vad_parameters=C.STT_VAD_PARAMS,
-        without_timestamps=True,  # the Thai distil model was fine-tuned without timestamp tokens
-    )
-    return "".join(s.text for s in segments).strip()
+    return stt.transcribe(to16k(audio))
+
+
+_DEFAULT_TRANSCRIBE = transcribe
 
 
 EARLY = {}  # handler -> (the speech so far, its transcription job), started in the silence before a turn ends
@@ -160,7 +162,7 @@ def inside_number(before, after):
     return bool(NUM_END.search(before)) and any(w.startswith(rest[: len(w)]) for w in NUM_WORDS)
 
 
-def chunk_sentences(tokens, min_chars=20, max_chars=80):
+def chunk_sentences(tokens, min_chars=20, max_chars=140):
     """Group streamed tokens into speakable chunks: cut at the last sentence end (ครับ, ค่ะ) once min_chars are in,
     or at the last space once max_chars are, never inside a number."""
     # ลุงจืด 2026-11-08 "คุยเป็นธรรมชาติ มนุษย์ มากที่สุด": a cut at any space after 20 characters spoke
@@ -213,28 +215,107 @@ def clock_note(heard):
     return ""
 
 
+_THAI_TERMS = (
+    ("BC AI Account", "บีซี เอไอ แอคเคาท์"),
+    ("Google Drive", "กูเกิลไดรฟ์"),
+    ("Account", "แอคเคาท์"),
+    ("FIFO", "ไฟโฟ"),
+    ("LIFO", "ไลโฟ"),
+    ("LOT", "ล็อต"),
+    ("POS", "พีโอเอส"),
+    ("VAT", "แวต"),
+    ("WHT", "หัก ณ ที่จ่าย"),
+    ("SKU", "เอสเคยู"),
+    ("SQL", "เอสคิวแอล"),
+    ("API", "เอพีไอ"),
+    ("ERP", "อีอาร์พี"),
+    ("SME", "เอสเอ็มอี"),
+    ("PDF", "พีดีเอฟ"),
+    ("CSV", "ซีเอสวี"),
+    ("Gmail", "จีเมล"),
+    ("Google", "กูเกิล"),
+    ("Online", "ออนไลน์"),
+    ("Cloud", "คลาวด์"),
+)
+_TERM_RE = re.compile(r"(?i)(?<![A-Za-z0-9])(" + "|".join(re.escape(k) for k, _ in _THAI_TERMS) + r")(?![A-Za-z0-9])")
+_TERM_MAP = {k.lower(): f" {v} " for k, v in _THAI_TERMS}
+_LETTER_TH = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", (
+    "เอ", "บี", "ซี", "ดี", "อี", "เอฟ", "จี", "เอช", "ไอ", "เจ", "เค", "แอล", "เอ็ม",
+    "เอ็น", "โอ", "พี", "คิว", "อาร์", "เอส", "ที", "ยู", "วี", "ดับเบิลยู", "เอ็กซ์", "วาย", "แซด",
+)))
+
+
+def _thai_pronounce(text):
+    """Map English business acronyms/terms to spaced Thai phonetics because F5-TTS-THAI's vocab is Thai-only."""
+    out = _TERM_RE.sub(lambda m: _TERM_MAP[m.group(1).lower()], str(text))
+    out = re.sub(r"(?<![A-Za-z0-9])[A-Z]{2,5}(?![A-Za-z0-9])",
+                 lambda m: " " + "".join(_LETTER_TH[c] for c in m.group(0)) + " ", out)
+    return re.sub(r"\s+", " ", out).strip()
+
+
+def _hf_file(repo, filename):
+    try:
+        return hf_hub_download(repo, filename, local_files_only=True)
+    except Exception:
+        return hf_hub_download(repo, filename)
+
+
 def load_tts():
-    """OmniVoice plus the reference voice, encoded once instead of on every phrase."""
-    model = OmniVoice.from_pretrained(C.TTS_MODEL, device_map="cuda:0" if C.HAS_CUDA else "cpu",
-                                      dtype=torch.float16 if C.HAS_CUDA else torch.float32)
-    assert model.sampling_rate == C.TTS_SAMPLE_RATE, model.sampling_rate
-    return model, model.create_voice_clone_prompt(ref_audio=C.REF_AUDIO_PATH, ref_text=C.REF_TEXT)
+    """F5-TTS-THAI v1 + Vocos + preloaded human reference voice tensor kept warm on device."""
+    f5_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, text_mask_padding=False, conv_layers=4, pe_attn_head=1)
+    model = load_f5_model(f5_cfg, _hf_file(C.TTS_MODEL, "model_1000000.pt"), mel_spec_type="vocos",
+                          vocab_file=_hf_file(C.TTS_MODEL, "vocab.txt"), device=C.DEVICE)
+    vocoder = load_vocoder("vocos", device=C.DEVICE)
+    ref_np, sr = sf.read(C.REF_AUDIO_PATH, dtype="float32")
+    if ref_np.ndim > 1:
+        ref_np = np.mean(ref_np, axis=1, dtype=np.float32)
+    if sr != C.TTS_SAMPLE_RATE:
+        ref_np = librosa.resample(ref_np, orig_sr=sr, target_sr=C.TTS_SAMPLE_RATE)
+    ref_tensor = torch.from_numpy(np.asarray(ref_np, dtype=np.float32)).reshape(1, -1)
+    ref_text = C.REF_TEXT.strip()
+    if not ref_text.endswith((". ", "。")):
+        ref_text += " " if ref_text.endswith(".") else ". "
+    return model, vocoder, ref_tensor, ref_text
 
 
-TTS_LOCK = threading.Lock()  # ponytail: one OmniVoice phrase at a time for every caller; a second model if callers queue
+TTS_LOCK = threading.Lock()  # ponytail: one TTS phrase at a time for every caller; a second model if callers queue
 
 
 def speak(text):
-    model, voice = tts
-    # a lone short word ("ครับ") now and then comes out all silence, which OmniVoice trims to 0 samples (3 of 20
-    # tries): the caller hears nothing and PyAV's resampler fails on the empty frame. Ceiling: 3 tries, then 0.1 s quiet
-    for _ in range(3):
-        with TTS_LOCK:
-            wav = np.asarray(model.generate(text=text, language="th", voice_clone_prompt=voice, speed=C.TTS_SPEED,
-                             generation_config=OmniVoiceGenerationConfig(num_step=C.TTS_STEP, guidance_scale=C.TTS_CFG))[0], dtype=np.float32)
-        if wav.size:
-            return wav.reshape(1, -1)
+    model, vocoder, ref_tensor, ref_text = tts
+    norm = normalize_text(_thai_pronounce(text)).strip()
+    if not norm:
+        return np.zeros((1, C.TTS_SAMPLE_RATE // 10), np.float32)
+    batches = [b for b in chunk_text(norm, max_chars=120) if b.strip()] or [norm]
+    for _ in range(2):
+        with TTS_LOCK, torch.inference_mode():
+            wav, _, _ = next(infer_batch_process(
+                (ref_tensor, C.TTS_SAMPLE_RATE), ref_text, batches, model, vocoder,
+                mel_spec_type="vocos", progress=None, nfe_step=C.TTS_STEP, cfg_strength=C.TTS_CFG,
+                sway_sampling_coef=-1.0, speed=C.TTS_SPEED, device=C.DEVICE, use_ipa=False,
+            ))
+        arr = np.asarray(wav, dtype=np.float32).reshape(-1) if wav is not None else np.zeros(0, np.float32)
+        if arr.size:
+            _, idx = librosa.effects.trim(arr, top_db=40)
+            if idx[1] > idx[0]:
+                pad_pre, pad_post = int(0.03 * C.TTS_SAMPLE_RATE), int(0.05 * C.TTS_SAMPLE_RATE)
+                arr = arr[max(0, int(idx[0]) - pad_pre):min(arr.size, int(idx[1]) + pad_post)]
+            peak = float(np.max(np.abs(arr))) if arr.size else 0.0
+            if peak > 0.98:
+                arr = arr * (0.95 / peak)
+            if arr.size:
+                return arr.reshape(1, -1)
     return np.zeros((1, C.TTS_SAMPLE_RATE // 10), np.float32)
+
+
+def bot_out(text, wav, lead=0.0):  # carries exact audio duration (s); optional silent preroll prevents WebRTC/speaker clipping word 1
+    arr = np.asarray(wav, dtype=np.float32).reshape(1, -1)
+    pad = int(round(max(0.0, lead) * C.TTS_SAMPLE_RATE))
+    out = np.concatenate((np.zeros((1, pad), np.float32), arr), axis=1) if pad else arr
+    ev = {"kind": "bot", "text": text, "dur": round(arr.size / C.TTS_SAMPLE_RATE, 2)}
+    if pad:
+        ev["lead"] = round(pad / C.TTS_SAMPLE_RATE, 2)
+    return (C.TTS_SAMPLE_RATE, out), AdditionalOutputs(ev)
 
 
 # ---------------------------------------------------------------- tools: each returns (cards for the screen, text for the LLM)
@@ -329,15 +410,15 @@ GENERAL_ASK = (f"{C.EXPERT}แต่งานนี้ตอบความร�
                "ตอบคำถามจากความรู้ทั่วไปเป็นภาษาไทย 2-4 ประโยค เฉพาะส่วนที่แน่ใจ ส่วนที่ไม่แน่ใจให้บอกว่าไม่แน่ใจ "
                "ห้ามตอบเรื่องโปรแกรม BC ราคา โปรโมชัน หรือข้อมูลของบริษัทใด ให้ตอบว่าต้องดูจากคลังความรู้ "
                # log 2026-11-08 07:21: it said "ค่าขนส่งถือเป็นค่าจ้างทำของหรือค่าบริการ" (RD ruling 0706/8419: transport is its own class)
-               f"อัตราภาษี มาตรา หรือข้อกฎหมายไทย ห้ามตอบจากความจำ ให้ตอบว่าในคลังไม่มีเรื่องนี้ ต้องให้{C.USER_NAME}หรือนักบัญชียืนยัน "
+               "อัตราภาษี มาตรา หรือข้อกฎหมายไทย ห้ามตอบจากความจำ ให้ตอบว่าในคลังไม่มีเรื่องนี้ ต้องให้นักบัญชียืนยัน "
                "อัตราหรือเรื่องอื่นที่เปลี่ยนตามเวลา ให้บอกด้วยว่าควรเช็กกับแหล่งทางการล่าสุด")
 
 
 def general_knowledge(question):
     text, _ = worker_chat([{"role": "system", "content": GENERAL_ASK}, {"role": "user", "content": str(question)[:500]}], None)
     text = " ".join(text.split())
-    card = {"source": "deepseek", "title": "ความรู้ทั่วไป (ไม่ใช่ข้อมูลในคลัง BC)", "snippet": text[:300], "url": None}
-    return [card], f"ความรู้ทั่วไปจาก DeepSeek ไม่ใช่ข้อมูลในคลังความรู้บีซี ต้องบอกผู้ฟังแบบนี้: {text}"
+    card = {"source": "deepseek", "title": "ความรู้ทั่วไป (ไม่ใช่ข้อมูลของโปรแกรม)", "snippet": text[:300], "url": None}
+    return [card], f"ความรู้ทั่วไปจาก DeepSeek ไม่ใช่ข้อมูลของโปรแกรม ต้องบอกผู้ฟังสั้นๆ ว่าเป็นความรู้ทั่วไป: {text}"
 
 
 class MCPClient:
@@ -407,7 +488,7 @@ LEAD_FIELDS = {"name": 80, "company": 120, "phone": 30, "message": 500}  # field
 LEAD_LOCK, LEAD_COUNT = threading.Lock(), defaultdict(int)  # call id -> messages it left
 LEAD_SPEC = tool_spec(
     # 2026-11-11 08:30: a caller gave a name and a number, the boss searched the brain for them and stored nothing
-    "leave_message", f"บันทึกข้อความฝากถึง{C.USER_NAME} เรียกทันทีเมื่อลูกค้าขอให้ติดต่อกลับหรือฝากเรื่องถึง{C.USER_NAME} "
+    "leave_message", f"บันทึกข้อความฝากติดต่อกลับ เรียกทันทีเมื่อลูกค้าสนใจซื้อ ขอให้ติดต่อกลับ หรือฝากเรื่องถึงฝ่ายขายหรือ{C.USER_NAME} "
     "และให้ชื่อกับเบอร์โทรแล้ว ใส่เฉพาะสิ่งที่ลูกค้าพูดเอง ห้ามแต่งเพิ่ม แล้วบอกลูกค้าตามผลที่ได้ "
     "ถ้ายังไม่ได้เรียกหรือเรียกไม่สำเร็จ ห้ามพูดว่าบันทึกหรือส่งเรื่องแล้ว",
     {"type": "object", "required": ["name", "phone"], "properties": {
@@ -459,8 +540,8 @@ def leave_message(name="", company="", phone="", message="", heard="", call=""):
         notify_owner()
     text = " ".join(f"{label} {lead[k]}" for k, label in (("name", "ชื่อ"), ("company", "บริษัท"), ("phone", "เบอร์"),
                                                          ("message", "เรื่อง")) if lead[k])
-    card = {"source": "message", "title": f"ฝากข้อความถึง{C.USER_NAME}แล้ว", "snippet": text[:300], "url": None}
-    return [card], f"บันทึกข้อความฝากถึง{C.USER_NAME}แล้ว {text} ยังไม่ได้นัดเวลาติดต่อกลับ"
+    card = {"source": "message", "title": "บันทึกข้อมูลติดต่อกลับแล้ว", "snippet": text[:300], "url": None}
+    return [card], f"บันทึกข้อความฝากติดต่อกลับแล้ว {text} จะประสานให้ติดต่อกลับ ยังไม่ได้นัดเวลาติดต่อกลับ"
 
 
 def leads_page():
@@ -550,7 +631,7 @@ def run_tool(name, args, tools):
 
 # webrtc_id -> what arrived beside the audio: typed chat, a system turn (greeting, reminder).
 # ponytail: one small dict per call is never freed; clear it on hang-up if calls ever number in the hundred thousands
-PENDING = defaultdict(lambda: {"text": "", "note": ""})
+PENDING = defaultdict(lambda: {"text": "", "note": "", "carry": (0.0, "")})
 
 
 def call_id():
@@ -574,7 +655,7 @@ def take(key, empty):
     p = PENDING[call_id()]
     value, p[key] = p[key], empty
     if len(PENDING) > 256:
-        for k in [k for k, v in list(PENDING.items())[:-128] if not v["text"] and not v["note"]]:
+        for k in [k for k, v in list(PENDING.items())[:-128] if not v["text"] and not v["note"] and not v["carry"][1]]:
             PENDING.pop(k, None)
     return value
 
@@ -798,7 +879,7 @@ def panel_events(tokens, screen, known, sources, turn):
 BASE_PROMPT = C.SYSTEM_PROMPT  # load_workers appends what is true of this setup (team, Google, desktop) after it
 # how it names a source, and the small talk a greeting may have ("เฮ้ ลุงจืด วันนี้สบายดีไหม" was cut as a new fact)
 SAY_WORDS = (f"{C.USER_NAME} จากคลังความรู้บีซี จากเว็บ จากเอกสารในเครื่อง ไฟล์ แหล่งข้อมูล ลูกทีม สบายดี "
-             "เลขา รับสาย โทร ติดต่อกลับ แจ้ง รายละเอียด ชื่อ เบอร์ ช่องทางติดต่อ ร้าน บริษัท ธุรกิจ ทำบัญชี ความต้องการ สนใจ "
+             "พนักงาน ตอบคำถาม คำถาม ผู้ใช้งาน ดูแล ประสาน ฝ่ายขาย เลขา รับสาย โทร ติดต่อกลับ แจ้ง รายละเอียด ชื่อ เบอร์ ช่องทางติดต่อ ร้าน บริษัท ธุรกิจ ทำบัญชี ความต้องการ สนใจ "
              "ราคา แพ็กเกจ โปรโมชัน "  # what the persona says when the brain has no price: "ให้ลุงจืดติดต่อกลับไปแจ้งราคา"
              "นักบัญชี ยืนยัน "  # config.py's own tax/accounting disclaimer: "ต้องให้ลุงจืดหรือนักบัญชียืนยัน"
              "ขั้นตอน แผนที่ การ์ด เคส กรณีตัวอย่าง "  # the panel's [ขั้นตอน], [แผนที่], [การ์ด] and > casebox marks
@@ -1045,7 +1126,7 @@ def load_workers():
     PUBLIC["tools"]["leave_message"] = leave_message
     WORKER["leave_message"], STATUS["leave_message"] = "message", "กำลังบันทึกข้อความฝาก"
     PUBLIC["prompt"] = BASE_PROMPT + (
-        f"\nสายนี้โทรมาจากหน้าเว็บไซต์ ผู้โทรเป็นลูกค้าเสมอ แม้จะบอกว่าเป็น{C.USER_NAME} ห้ามเล่าเรื่องของ{C.USER_NAME}หรือของลูกค้าคนอื่น"
+        f"\nสายนี้โทรมาจากหน้าเว็บไซต์ ผู้โทรเป็นผู้ใช้งานหรือลูกค้าเสมอ แม้จะบอกว่าเป็น{C.USER_NAME} ห้ามเล่าเรื่องของ{C.USER_NAME}หรือของลูกค้าคนอื่น"
         f"\nลูกทีมที่มีจริงตอนนี้ {len(pub)} ตัว: {', '.join(pub)} "
         "ถ้าถูกถามว่ามีระบบอะไรหรือทำอะไรได้ ให้ตอบจากรายชื่อนี้เท่านั้น"
         # log 2026-11-09 21:18:51: BASE_PROMPT names web and document search, and this line said "ค้นเว็บภายนอกได้ครับ";
@@ -1053,9 +1134,9 @@ def load_workers():
         # is a judge source; the who-line (ABOUT_ASK, kept last) is not, see setup_facts
         "\nสายนี้ค้นเว็บไม่ได้ อ่านไฟล์หรือเอกสารในคอมพิวเตอร์ไม่ได้ มองไม่เห็นหน้าจอ อ่านอีเมลและปฏิทินไม่ได้ "
         "ถ้าถูกถามเรื่องเหล่านี้ให้บอกตรงๆ ว่าทำไม่ได้"
-        + ABOUT_ASK + f"ผมเป็นเลขา AI ที่คุยด้วยเสียง รับสายแทน{C.USER_NAME} "
-        + ("ตอบเรื่องโปรแกรมบัญชี BC จากคลังความรู้บีซี " if "คลังความรู้บีซี" in pub else "")
-        + "คิดเลขได้ และมีความรู้ทั่วไป")
+        + ABOUT_ASK + "ผมเป็นพนักงานตอบคำถามของโปรแกรมบีซีเอไอแอคเคาท์ ถามได้ทุกเรื่องในระบบเลยครับ "
+        + ("ช่วยตอบเรื่องโปรแกรมบัญชี BC " if "คลังความรู้บีซี" in pub else "")
+        + "คิดเลขได้ และมีความรู้ทั่วไปครับ")
     log.info("public line: %s", sorted(PUBLIC["tools"]))
 
 
@@ -1113,83 +1194,96 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
     if not heard and not note:  # fastrtc already sent response_starting: without "done" the page stays on กำลังพูด…
         yield AdditionalOutputs({"kind": "done"})
         return
+    if heard and not hello:
+        carry_ts, carry_txt = take("carry", (0.0, ""))
+        if carry_txt and time.monotonic() - carry_ts < C.CARRY_MERGE_S:
+            heard = f"{carry_txt} {heard}".strip()
     sid, history = session(public)
     if "leave_message" in tools:  # the tool gets the caller's own words and call id from here, never from the boss
         caller, call = " ".join([*(m["content"] for m in history if m["role"] == "user"), heard]), call_id()  # read here: a worker thread has no call
         tools = {**tools, "leave_message": lambda **a: leave_message(**{**a, "heard": caller, "call": call})}
     log.info("USER (%.2fs): %s", time.perf_counter() - t0, masked(heard or note))
-    if not hello:
-        yield AdditionalOutputs({"kind": "user", "text": heard})  # "" for a system turn: clears the screen, no caller line
-
     asked = f"{heard}\n{note}".strip()
     # time rides on this turn only: keeps the system prompt + history a stable, cached KV prefix
     # date/time only when asked: the boss kept quoting the clock as a web price's "updated at" date and time, and
     # the number guard can't tell (the clock is a source); no clock in the turn = nothing to misquote
     now = asked + clock_note(heard)
     said, screen, turn = ([FILLER_TEXT["hello"]] if hello else []), [], {}  # the history keeps the hello too
-    # the caller answers the topic ask: "ไม่ใช่ครับ ยังเรื่องเดิม" got the new topic back (eval 2026-11-08 r18); and no second ask in a row
-    if was := history and TOPIC_ASK.search(history[-1]["content"]):
-        now += (f"\n(ระบบ: เลขาเพิ่งถามว่าจะเปลี่ยนไปคุยเรื่อง{was[1]} หรือยังคุยเรื่อง{was[2]}ต่อ "
-                f"ถ้าผู้โทรตอบว่าเรื่องเดิม ไม่ใช่ หรือไม่เปลี่ยน คือคุยเรื่อง{was[2]}ต่อ)")
-    if "desktop_task" in tools and desktop_agent.state["pending"] and heard:  # a held click/launch runs only on the caller's own yes
-        if CONFIRM.search(heard) and not REFUSE.search(heard):
-            now += f"\n(ระบบ: {C.USER_NAME}ยืนยันแล้ว ผลการทำงาน: {desktop_agent.confirm() or 'หมดเวลายืนยัน ต้องสั่งใหม่'})"
-        else:
-            desktop_agent.state["pending"] = None
-            now += f"\n(ระบบ: {C.USER_NAME}ไม่ได้ยืนยัน งานที่รอไว้ถูกยกเลิก)"
-    # a BC note read for this question: the answer explains it, so it ends with an example and starts with calc
-    # (ลุงจืด 2026-11-09 "ต้องแสดงตัวอย่างด้วยทุกครั้ง"). ponytail: one more boss round before the first word on
-    # every BC answer; asked by how-words only, "แล้วต้นทุนแบบไฟโฟล่ะ" got no calc and every example row was cut
-    read, query = False, ""
-    if "web_search" in tools and LATEST_ASK.search(heard):  # changes daily: only a fresh search may answer it
-        now += f"\n(ผลจาก web_search ตอนนี้: {(yield from dispatch([('web_search', {'query': heard})], said, turn, tools))[0]})"
-    elif heard and FAST_CHAT.match(heard.strip()):  # bare hello/thanks/hold: answer right away (~0.9 s faster, no wasted search)
-        pass
-    elif heard and (wording := search_words(history, heard))[1] and not was:  # off the topic, maybe misheard: ask, search nothing
-        topic, new = wording[1]
-        log.info("topic jump? %s -> %s", topic, new)  # the log watcher learns from these
-        # a fixed line, no boss: it once added "เพย์โรล" and the judge cut the whole ask (eval 2026-11-08 r17)
-        turn["ask"] = f"ขอถามให้ชัดก่อนครับ จะเปลี่ยนไปคุยเรื่อง{new} หรือยังคุยเรื่อง{topic}ต่อครับ"
-    elif heard:  # Auto Swarm: fan out multi-angle BC brain + local docs searches in parallel, then read top notes in parallel
-        qs = swarm_queries(wording[0], heard, history)
-        query = " | ".join(qs)
-        calls = [*(( "search_brain", {"query": q2}) for q in qs if "search_brain" in tools and (q2 := LONG_NUMBER.sub("", q).strip())),
-                 *(("search_docs", {"query": qs[0]}) for _ in (1,) if "search_docs" in tools)]
-        texts = yield from dispatch(calls, said, turn, tools)
-        slugs = list(dict.fromkeys(s for (n, _), t in zip(calls, texts) if n == "search_brain"
-                                   for s in re.findall(r'"slug": "([^"]+)"', t)))[:4]
-        if "read_note" in tools and slugs:
-            sql_ctx = " SQL" if history and "```sql" in history[-1]["content"].lower() else ""
-            notes = yield from dispatch([("read_note", {"slug": s}) for s in slugs], said, turn, tools)
-            for k, note in enumerate(notes):
-                part = grounding.note_sections(note, f"{heard} {' '.join(qs)}{sql_ctx}")  # query: FIFO for a heard "ไฟโฟ"
-                if not part and k == 0:  # top hit whose headings used other words: pass its lead body so round 0 answers at once
-                    part = NOTE_META.sub("", note).strip()[:1400]
-                if part:
-                    calls.append(("read_note", {}))
-                    texts.append(part if k == 0 else part[:1200])
-        found = " ".join(f"[{n}] {t}" for (n, _), t in zip(calls, texts))
-        read = any(n == "read_note" for n, _ in calls)
-        prev_kb = any(m["role"] == "assistant" and C.SCREEN_MARK in m["content"] for m in history[-2:])
-        sample_hint = ("รอบนี้เป็นการถามต่อสั้นๆ จากเรื่องเดิม ตอบตรงจุดที่ถามเพิ่มบน [จอ] ได้เลยโดยไม่ต้องวางตัวอย่างสมมติซ้ำ)"
-                       if prev_kb and not EXAMPLE_ASK.search(heard) and not CALC_ASK.search(heard) else
-                       f"คำตอบที่อธิบายเรื่องใหม่ ต่อท้าย [จอ] ด้วยบรรทัด {C.SAMPLE_LABEL} แล้วเลือกวิธีแสดงตัวอย่างให้เหมาะกับบริบท "
-                       "(ตารางคำนวณ แถบ [การ์ด]+กล่องเคส > ผังโครงสร้างย่อหน้า - /   - กล่องเคส >+[ขั้นตอน] หรือกรอบ ```sql+> พารามิเตอร์) "
-                       "ห้ามครอบผังย่อหน้าด้วย ``` และห้ามใส่ตัวเลขสองหลักขึ้นไปหรือวันที่สมมติเองโดยไม่ผ่าน calc ถ้าไม่ได้เรียก calc ให้ใช้รหัสติดตัวอักษรเช่น WH01, A01, SKU01)")
-        now += (f"\n(ระบบ: คำพูดนี้น่าจะหมายถึง {query} ลูกทีม Swarm ค้นขนานให้แล้ว {found} ใช้เฉพาะส่วนที่ตรงกับคำถามจริงๆ "
-                # 2026-11-08 04:08 call: "ไม่พบเรื่อง…ในคลังความรู้บีซีครับ หมายถึงอะไรครับ" 4 times, never a second search
-                "ถ้าไม่มีส่วนไหนตรง ให้สั่งลูกทีมค้นหลายมุมพร้อมกันในรอบเดียวก่อน (search_brain คำไทยหรือคำอังกฤษ หรือ web_search) "
-                # 2026-11-08 05:16: asked for a worked example, it said "ยังไม่มีในคลัง" twice
-                "ถ้ายังไม่เจอและเป็นความรู้ทั่วไปที่ไม่ใช่เรื่อง BC ให้ถาม general_knowledge ถ้าเป็นเรื่อง BC จึงบอกสั้นๆ ว่ายังไม่มีข้อมูล "
-                "แล้วถามว่าหมายถึงเรื่องไหน ถ้าขอตัวอย่างหรือให้คิดเลข ให้ตั้งตัวเลขสมมติตามสูตรในผลค้นแล้วคิดด้วย calc ห้ามตอบจากความจำ "
-                + sample_hint)
-    messages = [{"role": "system", "content": prompt}, *history, {"role": "user", "content": now.strip()}]
-    known = grounding.numbers(" ".join(m["content"] for m in messages[1:]))  # every number a source gave this turn
+    interrupted, answered = False, False
     try:
+        if not hello:
+            yield AdditionalOutputs({"kind": "user", "text": heard})  # "" for a system turn: clears the screen, no caller line
+        # the caller answers the topic ask: "ไม่ใช่ครับ ยังเรื่องเดิม" got the new topic back (eval 2026-11-08 r18); and no second ask in a row
+        stay_topic = None
+        if was := history and TOPIC_ASK.search(history[-1]["content"]):
+            if REFUSE.search(heard) or "เรื่องเดิม" in heard:
+                stay_topic = was[2]
+                now += (f"\n(ระบบ: ผู้โทรยืนยันว่าไม่เปลี่ยนเรื่อง คือคุยเรื่อง{was[2]}ต่อ "
+                        f"ห้ามเอ่ยถึงหรือพูดคำว่า{was[1]}ในคำตอบอีกเด็ดขาด ให้คุยต่อเฉพาะเรื่อง{was[2]}เท่านั้น)")
+            else:
+                now += (f"\n(ระบบ: เลขาเพิ่งถามว่าจะเปลี่ยนไปคุยเรื่อง{was[1]} หรือยังคุยเรื่อง{was[2]}ต่อ "
+                        f"ถ้าผู้โทรตอบว่าเรื่องเดิม ไม่ใช่ หรือไม่เปลี่ยน คือคุยเรื่อง{was[2]}ต่อ)")
+        if "desktop_task" in tools and desktop_agent.state["pending"] and heard:  # a held click/launch runs only on the caller's own yes
+            if CONFIRM.search(heard) and not REFUSE.search(heard):
+                now += f"\n(ระบบ: {C.USER_NAME}ยืนยันแล้ว ผลการทำงาน: {desktop_agent.confirm() or 'หมดเวลายืนยัน ต้องสั่งใหม่'})"
+            else:
+                desktop_agent.state["pending"] = None
+                now += f"\n(ระบบ: {C.USER_NAME}ไม่ได้ยืนยัน งานที่รอไว้ถูกยกเลิก)"
+        # a BC note read for this question: the answer explains it, so it ends with an example and starts with calc
+        # (ลุงจืด 2026-11-09 "ต้องแสดงตัวอย่างด้วยทุกครั้ง"). ponytail: one more boss round before the first word on
+        # every BC answer; asked by how-words only, "แล้วต้นทุนแบบไฟโฟล่ะ" got no calc and every example row was cut
+        read, query = False, ""
+        if "web_search" in tools and LATEST_ASK.search(heard):  # changes daily: only a fresh search may answer it
+            now += f"\n(ผลจาก web_search ตอนนี้: {(yield from dispatch([('web_search', {'query': heard})], said, turn, tools))[0]})"
+        elif heard and FAST_CHAT.match(heard.strip()):  # bare hello/thanks/hold: answer right away (~0.9 s faster, no wasted search)
+            pass
+        elif heard and not stay_topic and (wording := search_words(history, heard))[1] and not was:  # off the topic, maybe misheard: ask, search nothing
+            topic, new = wording[1]
+            log.info("topic jump? %s -> %s", topic, new)  # the log watcher learns from these
+            # a fixed line, no boss: it once added "เพย์โรล" and the judge cut the whole ask (eval 2026-11-08 r17)
+            turn["ask"] = f"ขอถามให้ชัดก่อนครับ จะเปลี่ยนไปคุยเรื่อง{new} หรือยังคุยเรื่อง{topic}ต่อครับ"
+        elif heard:  # Auto Swarm: fan out multi-angle BC brain + local docs searches in parallel, then read top notes in parallel
+            qs = [stay_topic] if stay_topic else swarm_queries(wording[0], heard, history)
+            query = " | ".join(qs)
+            calls = [*(( "search_brain", {"query": q2}) for q in qs if "search_brain" in tools and (q2 := LONG_NUMBER.sub("", q).strip())),
+                     *(("search_docs", {"query": qs[0]}) for _ in (1,) if "search_docs" in tools)]
+            texts = yield from dispatch(calls, said, turn, tools)
+            slugs = list(dict.fromkeys(s for (n, _), t in zip(calls, texts) if n == "search_brain"
+                                       for s in re.findall(r'"slug": "([^"]+)"', t)))[:4]
+            if "read_note" in tools and slugs:
+                sql_ctx = " SQL" if history and "```sql" in history[-1]["content"].lower() else ""
+                notes = yield from dispatch([("read_note", {"slug": s}) for s in slugs], said, turn, tools)
+                for k, note in enumerate(notes):
+                    part = grounding.note_sections(note, f"{heard} {' '.join(qs)}{sql_ctx}")  # query: FIFO for a heard "ไฟโฟ"
+                    if not part and k == 0:  # top hit whose headings used other words: pass its lead body so round 0 answers at once
+                        part = NOTE_META.sub("", note).strip()[:1400]
+                    if part:
+                        calls.append(("read_note", {}))
+                        texts.append(part if k == 0 else part[:1200])
+            found = " ".join(f"[{n}] {t}" for (n, _), t in zip(calls, texts))
+            read = any(n == "read_note" for n, _ in calls)
+            prev_kb = any(m["role"] == "assistant" and C.SCREEN_MARK in m["content"] for m in history[-2:])
+            sample_hint = ("รอบนี้เป็นการถามต่อสั้นๆ จากเรื่องเดิม ตอบตรงจุดที่ถามเพิ่มบน [จอ] ได้เลยโดยไม่ต้องวางตัวอย่างสมมติซ้ำ)"
+                           if prev_kb and not EXAMPLE_ASK.search(heard) and not CALC_ASK.search(heard) else
+                           f"คำตอบที่อธิบายเรื่องใหม่ ต่อท้าย [จอ] ด้วยบรรทัด {C.SAMPLE_LABEL} แล้วเลือกวิธีแสดงตัวอย่างให้เหมาะกับบริบท "
+                           "(ตารางคำนวณ แถบ [การ์ด]+กล่องเคส > ผังโครงสร้างย่อหน้า - /   - กล่องเคส >+[ขั้นตอน] หรือกรอบ ```sql+> พารามิเตอร์) "
+                           "ห้ามครอบผังย่อหน้าด้วย ``` และห้ามใส่ตัวเลขสองหลักขึ้นไปหรือวันที่สมมติเองโดยไม่ผ่าน calc ถ้าไม่ได้เรียก calc ให้ใช้รหัสติดตัวอักษรเช่น WH01, A01, SKU01)")
+            now += (f"\n(ระบบ: คำพูดนี้น่าจะหมายถึง {query} ลูกทีม Swarm ค้นสมองขนานให้แล้ว {found} "
+                    "ใช้เฉพาะข้อมูลที่มีอยู่จริงในผลค้นสมองนี้เท่านั้น ห้ามเดาหรือแต่งเติมเองเด็ดขาด เวลาพูดให้คุยเป็นกันเองเหมือนเพื่อนโดยไม่ต้องพูดคำว่า จากคลังความรู้บีซี "
+                    # 2026-11-08 04:08 call: "ไม่พบเรื่อง…ในคลังความรู้บีซีครับ หมายถึงอะไรครับ" 4 times, never a second search
+                    "ถ้าไม่มีส่วนไหนตรง ให้สั่งลูกทีมค้นสมองหลายมุมพร้อมกันในรอบเดียวก่อน (search_brain คำไทยหรือคำอังกฤษ หรือ web_search) "
+                    # 2026-11-08 05:16: asked for a worked example, it said "ยังไม่มีในคลัง" twice
+                    "ถ้ายังไม่เจอและเป็นความรู้ทั่วไปที่ไม่ใช่เรื่อง BC ให้ถาม general_knowledge ถ้าเป็นเรื่อง BC จึงบอกสั้นๆ ว่ายังไม่มีข้อมูล "
+                    "แล้วถามว่าหมายถึงเรื่องไหน ถ้าขอตัวอย่างหรือให้คิดเลข ให้ตั้งตัวเลขสมมติตามสูตรในผลค้นแล้วคิดด้วย calc ห้ามตอบจากความจำ "
+                    + sample_hint)
+        messages = [{"role": "system", "content": prompt}, *history, {"role": "user", "content": now.strip()}]
+        known = grounding.numbers(" ".join(m["content"] for m in messages[1:]))  # every number a source gave this turn
+        answered = True
         if ask := turn.get("ask"):
             log.info("BOT  (topic ask): %s", masked(ask))
             said.append(ask)
-            yield (C.TTS_SAMPLE_RATE, speak(ask)), AdditionalOutputs({"kind": "bot", "text": ask})
+            turn["voiced"] = True
+            yield bot_out(ask, speak(ask), lead=0.18)
         for rnd in range(0 if ask else C.MAX_TOOL_ROUNDS + 1):
             calls = []
             # what the judge may accept: this turn's question, prefetch and tool results, earlier turns, and what
@@ -1209,6 +1303,11 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
                     log.info("not said to the secretary: no answer")
                     turn["silent"] = True
                     break
+                closed = bool(SENTENCE_TAIL.search(chunk))
+                if turn.get("cut_open"):  # log 2026-11-14 15:15:57: head of an unfinished sentence was cut, never speak its headless tail
+                    log.info("dropped tail of a cut sentence: %s", masked(clean(chunk)))
+                    turn["cut_open"] = not closed
+                    continue
                 if text := clean(chunk):
                     # log 2026-11-08 13:16: 28 of 92 lines were a bare "ขอโทษครับ" opener, all a talked-over caller
                     # heard, and the history kept it as the whole reply, so the boss copied it (replay with 18 history
@@ -1224,17 +1323,22 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
                     if not said and BARE_ACK.fullmatch(text):
                         turn["ack"] = text
                         continue
+                    if not said and turn.get("cut") and DANGLING_HEAD.search(text):  # log 2026-11-14 11:06:55: opener cut, "แต่ที่มีคือ..." spoke mid-thought
+                        log.info("dropped dangling continuation after cut opener: %s", masked(text))
+                        turn["cut_open"] = not closed
+                        turn.pop("ack", None)
+                        continue
                     candidate = text if not turn.get("ack") or text.startswith(turn["ack"]) else f"{turn['ack']} {text}"
                     got = time.perf_counter()
                     # ห้ามแต่ง: a phrase with an unsourced number or fact is dropped; one line at the end says so
                     if bad := grounding.unsourced(candidate, known):
                         log.info("cut a sentence: numbers %s are in no source: %s", masked(" ".join(sorted(bad))), masked(candidate))
-                        turn["cut"] = True
+                        turn["cut"], turn["cut_open"] = True, not closed
                         turn.pop("ack", None)
                         continue
                     if not judge(sources, candidate, " ".join(said)):
                         log.info("cut a sentence (judge %.2fs): the judge found no source for it: %s", time.perf_counter() - got, masked(candidate))
-                        turn["cut"] = True
+                        turn["cut"], turn["cut_open"] = True, not closed
                         turn.pop("ack", None)
                         continue
                     text = candidate
@@ -1245,8 +1349,10 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
                     log.info("BOT  (%.2fs | boss %.2f judge %.2f voice %.2f): %s", time.perf_counter() - t0, got - mark,
                              judged - got, time.perf_counter() - judged, masked(text))
                     mark = time.perf_counter()
+                    lead = 0.0 if turn.get("voiced") else 0.18
+                    turn["voiced"] = True
                     said.append(text)
-                    yield (C.TTS_SAMPLE_RATE, wav), AdditionalOutputs({"kind": "bot", "text": text})
+                    yield bot_out(text, wav, lead=lead)
             if turn.get("silent"):
                 break
             yield from panel_events(tokens, screen, known, sources, turn)
@@ -1276,14 +1382,21 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
                     log.warning("the boss said nothing (%d rounds)", rnd + 1)
                 text = CUT_ALL
                 log.info("BOT  (all cut): %s", text)  # logged, so watch_calls.py sees how often it is said
+            turn["voiced"] = True
             said.append(text)
-            yield (C.TTS_SAMPLE_RATE, speak(text)), AdditionalOutputs({"kind": "bot", "text": text})
+            yield bot_out(text, speak(text), lead=0.18)
+    except GeneratorExit:
+        interrupted = True
+        raise
     finally:  # also runs after barge-in; history may hold a chunk that was queued but cut before playback
-        details = "\n".join(turn.get("kept", []))  # only lines that passed both checks, never the CUT_SHOW note; an unchecked rest is no memory
-        answer = C.SILENT_MARK if turn.get("silent") else " ".join(said) + (f"\n{C.SCREEN_MARK}\n{details[:800]}" if details else "")
-        history.extend([{"role": "user", "content": asked}, {"role": "assistant", "content": answer}])
-        del history[: -2 * C.HISTORY_TURNS]
-        save_session(sid, history)
+        if interrupted and heard and not hello and not said and not turn.get("voiced") and not turn.get("kept"):
+            PENDING[call_id()]["carry"] = (time.monotonic(), heard)
+        elif answered:
+            details = "\n".join(turn.get("kept", []))  # only lines that passed both checks, never the CUT_SHOW note; an unchecked rest is no memory
+            answer = C.SILENT_MARK if turn.get("silent") else " ".join(said) + (f"\n{C.SCREEN_MARK}\n{details[:800]}" if details else "")
+            history.extend([{"role": "user", "content": asked}, {"role": "assistant", "content": answer}])
+            del history[: -2 * C.HISTORY_TURNS]
+            save_session(sid, history)
     yield AdditionalOutputs({"kind": "done"})
 
 
@@ -1295,10 +1408,10 @@ def greet(*_, public=False):
     (owner line only: the public line has no Google tools)."""
     # ลุงจืด 2026-11-09 "เข้ามาครั้งแรก ต้องคุยเลย": the boss + voice took ~3 s to the first word; this plays at once
     yield AdditionalOutputs({"kind": "user", "text": ""})  # clears the screen, no caller line
-    yield (C.TTS_SAMPLE_RATE, FILLERS["hello"]), AdditionalOutputs({"kind": "bot", "text": FILLER_TEXT["hello"]})
+    yield bot_out(FILLER_TEXT["hello"], FILLERS["hello"], lead=0.25)
     back = "ผู้โทรคนนี้เคยคุยกันแล้ว ทักต่อแบบคนคุ้นเคยตามเรื่องก่อนหน้าได้เลย " if session(public)[1] else ""
-    note = (f"(ระบบ: มีสายเข้า เลขาพูดว่า{FILLER_TEXT['hello']}ไปแล้ว ห้ามทักซ้ำ "
-            f"แนะนำตัวสั้นๆ แบบเป็นกันเองว่าผมเป็นเลขาของ{C.USER_NAME} แล้วถามว่าให้ช่วยเรื่องอะไร {back}"
+    note = (f"(ระบบ: มีสายเข้า พูดว่า{FILLER_TEXT['hello']}ไปแล้ว ห้ามทักซ้ำ "
+            f"แนะนำตัวสั้นๆ แบบเพื่อนเป็นกันเองว่าผมเป็นพนักงานตอบคำถามบีซีเอไอแอคเคาท์ ถามได้ทุกเรื่องในระบบเลยครับ แล้วถามว่าอยากถามหรือให้ช่วยดูเรื่องไหน {back}"
             "ห้ามพูดเรื่องอากาศ ข่าว หรือข้อเท็จจริงใดที่ไม่ได้มาจากผลค้น")  # it once invented sunny weather in a hello
     # ponytail: on the owner line the brief goes to whoever calls first that day (127.0.0.1 only)
     if not public and "calendar_events" in TOOLS and brief["day"] != datetime.date.today():
@@ -1346,7 +1459,7 @@ async def remind_loop(stream):
 
 def warm_up():
     t0 = time.perf_counter()
-    stt.transcribe(np.zeros(16000, dtype=np.float32), language=C.STT_LANGUAGE)
+    stt.transcribe(np.zeros(16000, dtype=np.float32))
     llm.chat(model=C.VISION_MODEL, messages=[{"role": "user", "content": "สวัสดี"}], think=False, keep_alive=-1)
     # same system prompt + tools as real calls: DeepSeek caches that prefix and the connection stays open
     hello = [{"role": "system", "content": C.SYSTEM_PROMPT}, {"role": "user", "content": "สวัสดี"}]
@@ -1369,6 +1482,35 @@ class BargeInReplyOnPause(ReplyOnPause):
         super().reset()
         for field in ("stream", "buffer", "sampling_rate", "started_talking"):
             setattr(self.state, field, getattr(old, field))
+        if not self.state.started_talking:
+            LIVE.pop(id(self), None)
+
+    def live_words(self, sr, snap, state):
+        """Stream live karaoke words over the WebRTC data channel while the caller is still speaking."""
+        live = LIVE.get(id(self))
+        try:
+            if not state.started_talking:
+                return
+            if transcribe is not _DEFAULT_TRANSCRIBE or not live or not live.get("stream"):
+                txt = transcribe((sr, snap))
+            else:
+                txt = live["stream"].accept(to16k((sr, snap)))
+            bare = re.sub(r"[\s.,!?…]+", "", txt)
+            if not bare or bare in self.HESITATIONS or not state.started_talking:
+                return
+            now_m = time.monotonic()
+            turn_s = max(snap.size, live.get("fed", 0) if live else 0) / sr
+            spoken = " ".join(t for s, e, t in self.playing if e + 0.5 > now_m - turn_s and s < now_m)
+            if spoken and grounding.is_echo(txt, spoken):
+                return
+            if live and txt != live["text"]:
+                live["text"] = txt
+                self.send_message_sync(json.dumps({"type": "partial", "data": txt}, ensure_ascii=False))
+        except Exception:
+            pass
+        finally:
+            if live:
+                live["busy"] = False
 
     def determine_pause(self, audio, sampling_rate, state):
         """LiveKit-style endpointing. fastrtc looked for silence in fixed 0.6 s chunks, so it saw the end of a turn
@@ -1389,7 +1531,19 @@ class BargeInReplyOnPause(ReplyOnPause):
             if not chunks:
                 return False
             state.started_talking, state.stream, state.buffer = True, recent, None
+            LIVE[id(self)] = {"t": 0.0, "fed": 0, "text": "", "busy": False,
+                              "stream": stt.stream() if hasattr(stt, "stream") else None}
             self.send_message_sync(create_message("log", "started_talking"))  # the page turns the secretary down
+        live = LIVE.setdefault(id(self), {"t": 0.0, "fed": 0, "text": "", "busy": False,
+                                          "stream": stt.stream() if hasattr(stt, "stream") else None})
+        now_m = time.monotonic()
+        min_new = int(sampling_rate * C.LIVE_STEP_S)
+        if (silence < C.PAUSE_SILENCE_S and not live["busy"]
+                and now_m - live["t"] >= C.LIVE_STEP_S and state.stream.size - live.get("fed", 0) >= min_new):
+            fed = live.get("fed", 0)
+            delta = state.stream[fed:].copy() if live.get("stream") is not None else state.stream[-15 * sampling_rate:].copy()
+            live["busy"], live["t"], live["fed"] = True, now_m, state.stream.size
+            EARLY_STT.submit(self.live_words, sampling_rate, delta, state)
         early = EARLY.get(id(self))
         # speech past what was transcribed early makes it out of date; a speech end the sliding VAD merely moves a
         # little (through Opus it does) inside the transcribed audio does not. No speech in the window: the speech
@@ -1421,6 +1575,7 @@ class BargeInReplyOnPause(ReplyOnPause):
             state.pause_detected = state.started_talking = False
             state.stream = None
             EARLY.pop(id(self), None)
+            LIVE.pop(id(self), None)
             self.send_message_sync(create_message("log", "noise"))  # the page turns the secretary back up
             if PENDING[call_id()]["text"]:  # typed while this noise played: /chat left it to this turn, so start it now
                 self.push_turn(interrupt=False)
@@ -1543,13 +1698,13 @@ SITEMAP_XML = (
     "</urlset>\n"
 )
 LLMS_TXT = (
-    "# Javis — ผู้ช่วยเสียงภาษาไทยสำหรับโปรแกรมบัญชี BC AI Account\n\n"
-    "> เลขาเสียงภาษาไทย AI รับสายแทนลุงจืด คุยโต้ตอบแบบโทรศัพท์ผ่านเบราว์เซอร์ (WebRTC) หรือพิมพ์แชท "
-    "ตอบคำถามการใช้งานโปรแกรมบัญชี BC AI Account และระบบบัญชี SME ไทยจากคลังความรู้บีซี พร้อมคำนวณตัวอย่างด้วย Decimal และรับฝากข้อความติดต่อกลับ\n\n"
+    "# Javis — พนักงานตอบคำถามเสียงภาษาไทย BC Ai Account (ถามได้ทุกเรื่องในระบบ)\n\n"
+    "> พนักงานตอบคำถามเสียงภาษาไทยสำหรับโปรแกรมบัญชี BC Ai Account (BC AI Account) ถามได้ทุกเรื่องในระบบ คุยโต้ตอบแบบเพื่อนผ่านเบราว์เซอร์ (WebRTC) หรือพิมพ์แชท "
+    "ตอบคำถามการใช้งานโปรแกรมบัญชี BC Ai Account และระบบบัญชี SME ไทยจากสมองคลังความรู้บีซี พร้อมคำนวณตัวอย่างด้วย Decimal และรับฝากข้อความติดต่อกลับ\n\n"
     "## ความสามารถหลักบนสายสาธารณะ\n"
-    "- ตอบคำถามเมนู ขั้นตอนการใช้งาน และวิธีคิดต้นทุน/ภาษีในโปรแกรมบัญชี BC AI Account จากคลังความรู้บีซีโดยไม่แต่งข้อมูล\n"
-    "- คำนวณตัวอย่างประกอบเป็นตารางบนหน้าจอด้วยเครื่องคิดเลขทศนิยมแม่นยำ (Decimal ROUND_HALF_UP)\n"
-    "- รับฝากชื่อ ร้าน/บริษัท เบอร์โทร และเรื่องที่ต้องการให้ลุงจืดติดต่อกลับ\n\n"
+    "- ตอบคำถามได้ทุกเรื่องในระบบ ทั้งเมนู ขั้นตอนการใช้งาน และวิธีคิดต้นทุน/ภาษีในโปรแกรมบัญชี BC Ai Account จากสมองคลังความรู้บีซีโดยไม่เดาหรือแต่งข้อมูล\n"
+    "- คำนวณตัวอย่างประกอบบนหน้าจอด้วยเครื่องคิดเลขทศนิยมแม่นยำ (Decimal ROUND_HALF_UP)\n"
+    "- รับฝากชื่อ ร้าน/บริษัท เบอร์โทร และเรื่องที่ต้องการให้ติดต่อกลับ\n\n"
     "## ลิงก์หลัก\n"
     f"- [หน้าสนทนาหลัก]({PUBLIC_SITE}/): เปิดหน้าเว็บเพื่อเริ่มคุยด้วยเสียงหรือพิมพ์ข้อความได้ทันที\n"
 )
@@ -1657,7 +1812,7 @@ if __name__ == "__main__":
     tts = load_tts()
     load_mcp_tools()
     load_workers()
-    log.info("STT=%s (%s) BOSS=%s VISION=%s TTS=%s", C.STT_MODEL, C.DEVICE, C.DEEPSEEK_MODEL, C.VISION_MODEL, C.TTS_MODEL)
+    log.info("STT=%s (cpu-onnx) BOSS=%s VISION=%s TTS=%s (%s)", C.STT_MODEL, C.DEEPSEEK_MODEL, C.VISION_MODEL, C.TTS_MODEL, C.DEVICE)
     warm_up()
     if C.PUBLIC_SSH:
         threading.Thread(target=tunnel, daemon=True).start()

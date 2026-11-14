@@ -162,6 +162,13 @@ va.SESSIONS[""], va.llm_tokens = [], (lambda *a: iter(["ได้ครับ ",
 assert [o[1].args[0]["text"] for o in va.reply((16000, np.zeros(16000))) if isinstance(o, tuple)] == [va.SCREEN_ONLY]
 va.SESSIONS[""], va.llm_tokens = [], (lambda *a: iter(["ได้ครับ ", "ประโยคแต่งที่ยาวเกินยี่สิบตัว", "ครับ"]))
 assert [o[1].args[0]["text"] for o in va.reply((16000, np.zeros(16000))) if isinstance(o, tuple)] == [va.CUT_ALL]
+# call 2026-11-14 15:15:57 & 11:06:55: when the head of an unfinished sentence is cut (or opener cut before "แต่..."),
+# never blurt out only the middle/tail fragment ("แล้วตั้งหน่วยต้นทุน...", "แต่ที่มีคือ..."); fall back to SCREEN_ONLY
+va.judge = lambda sources, piece, before: "ประโยคแต่ง" not in piece
+va.SESSIONS[""], va.llm_tokens = [], (lambda *a: iter(["ประโยคแต่งที่ยาวเกินร้อยสี่สิบตัวอักษร" * 4 + " ", "แล้วตั้งหน่วยต้นทุนเป็นกิโลกรัมได้เลย", "[จอ]\n| ลำดับ | รายการ |\n|---|---|\n"]))
+assert [o[1].args[0]["text"] for o in va.reply((16000, np.zeros(16000))) if isinstance(o, tuple)] == [va.SCREEN_ONLY]
+va.SESSIONS[""], va.llm_tokens = [], (lambda *a: iter(["ประโยคแต่งส่วนต้นที่ถูกตัดครับ ", "แต่ที่มีคือปรับยอดทันทีครับ ", "[จอ]\n| ลำดับ | รายการ |\n|---|---|\n"]))
+assert [o[1].args[0]["text"] for o in va.reply((16000, np.zeros(16000))) if isinstance(o, tuple)] == [va.SCREEN_ONLY]
 va.judge = real_judge
 va.dispatch = dispatch
 va.early_words, va.speak, va.worker_chat, va.llm_tokens, va.SESSIONS[""] = saved
@@ -233,6 +240,20 @@ assert va.CALC_ASK.search("วิธีคำนวณต้นทุนสิ�
 assert va.CALC_ASK.search("วิธีคิดภาษีมูลค่าเพิ่ม") and not va.CALC_ASK.search("ออกใบกำกับภาษีขายพิมพ์ผิดยกเลิกยังไง")
 assert va.FAST_CHAT.match("สวัสดีครับ") and not va.FAST_CHAT.match("สวัสดีครับ ขายวัสดุก่อสร้าง")
 assert not va.grounding.new_words("[การ์ด] ลูกหนี้: 50,000 | เจ้าหนี้: 30,000", f"{va.OWN_WORDS} ลูกหนี้ เจ้าหนี้")
+assert not va.grounding.new_words("ผมเป็นพนักงานตอบคำถามของโปรแกรมบีซีเอไอแอคเคาท์ ถามได้ทุกเรื่องในระบบเลยครับ", va.OWN_WORDS)
+assert va.bot_out("สวัสดีครับ", np.zeros((1, C.TTS_SAMPLE_RATE * 2), np.float32))[1].args[0]["dur"] == 2.0
+_wpad, _epad = va.bot_out("สวัสดีครับ", np.ones((1, C.TTS_SAMPLE_RATE), np.float32), lead=0.2)
+assert _wpad[1].shape[1] == int(C.TTS_SAMPLE_RATE * 1.2) and not _wpad[1][0, :int(C.TTS_SAMPLE_RATE * 0.2)].any() and _epad.args[0]["lead"] == 0.2
+partials, h_live = [], object.__new__(va.BargeInReplyOnPause)
+h_live.playing, h_live.send_message_sync = (), partials.append
+va.LIVE[id(h_live)] = {"t": 0.0, "size": 0, "text": "", "busy": True}
+saved_tr, va.transcribe = va.transcribe, (lambda audio: "มี ธุรกิจ อะไร บ้าง")
+va.BargeInReplyOnPause.live_words(h_live, 16000, np.zeros(8000, np.float32), NS(started_talking=True))
+va.transcribe = lambda audio: "เสียงดนตรี"
+va.BargeInReplyOnPause.live_words(h_live, 16000, np.zeros(8000, np.float32), NS(started_talking=True))
+va.transcribe = saved_tr
+va.LIVE.pop(id(h_live), None)
+assert len(partials) == 1 and json.loads(partials[0]) == {"type": "partial", "data": "มี ธุรกิจ อะไร บ้าง"}, partials
 # TALK_WORDS: the judge still sees every made-up line, and asks to repeat/spell/explain need no judge
 from eval_talk import MUST_CUT
 assert all(va.grounding.new_words(line, f"{va.OWN_WORDS}\n{va.TALK_WORDS}") for _, line in MUST_CUT)
@@ -264,9 +285,36 @@ pub_routes = {getattr(r, "path", None) for r in pub_app.routes}
 assert {"/robots.txt", "/sitemap.xml", "/llms.txt", "/ice"} <= pub_routes and "/leads" not in pub_routes, pub_routes
 assert "Googlebot" in va.ROBOTS_TXT and "OAI-SearchBot" in va.ROBOTS_TXT and "https://javis.bcsmethai.com/sitemap.xml" in va.ROBOTS_TXT
 assert "<loc>https://javis.bcsmethai.com/</loc>" in va.SITEMAP_XML and "BC AI Account" in va.LLMS_TXT
+pron = va._thai_pronounce("ระบบ BC AI Account คิดต้นทุน FIFO, LOT และบัญชี GL")
+assert "บีซี เอไอ แอคเคาท์" in pron and "ไฟโฟ" in pron and "ล็อต" in pron and "จีแอล" in pron, pron
+# pre-voice continuation merge: a mid-thought barge-in before the bot speaks carries the first fragment cleanly
+saved_tr2, carry_inputs = va.transcribe, iter(["อยากถามเรื่อง", "การคิดต้นทุนไฟโฟครับ"])
+va.transcribe = lambda audio: next(carry_inputs)
+va.PENDING.pop("", None)
+va.SESSIONS.pop("", None)
+try:
+    g1 = va.reply((16000, np.ones(16000, np.float32)))
+    ev1 = next(g1)
+    assert ev1.args[0] == {"kind": "user", "text": "อยากถามเรื่อง"}, ev1
+    g1.close()
+    assert not va.SESSIONS.get("") and va.PENDING[""]["carry"][1] == "อยากถามเรื่อง", va.PENDING.get("")
+    g2 = va.reply((16000, np.ones(16000, np.float32)))
+    ev2 = next(g2)
+    assert ev2.args[0] == {"kind": "user", "text": "อยากถามเรื่อง การคิดต้นทุนไฟโฟครับ"}, ev2
+    g2.close()
+finally:
+    va.transcribe = saved_tr2
+    va.PENDING.pop("", None)
+    va.SESSIONS.pop("", None)
 
 # --- models + server ---------------------------------------------------------------------------------------------
 va.stt = va.load_stt()
+wav16_ref = librosa.load(C.REF_AUDIO_PATH, sr=16000, mono=True)[0]
+st_ref, partials_ref = va.stt.stream(), set()
+for _pos in range(0, wav16_ref.size, 2560):
+    if _p := st_ref.accept(wav16_ref[_pos : _pos + 2560]):
+        partials_ref.add(_p)
+assert len(partials_ref) >= 2 and st_ref.finish() == va.stt.transcribe(wav16_ref) != "", (len(partials_ref), partials_ref)
 va.llm = ollama.Client(host=C.OLLAMA_HOST)
 va.tts = va.load_tts()
 va.load_mcp_tools()

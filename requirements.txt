@@ -1,8 +1,18 @@
 # Install CUDA torch first (RTX 50xx needs cu128):
 #   pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 # (torchaudio >= 2.9 needs torchcodec + FFmpeg shared DLLs for torchaudio.load)
-faster-whisper
-omnivoice
+# Then install f5-tts-th without overriding torch/numpy:
+#   uv pip install --no-deps f5-tts-th==1.0.9
+onnxruntime
+faster-whisper  # Silero VAD gating (faster_whisper.vad)
+cached_path
+torchdiffeq
+vocos
+x_transformers
+pythainlp
+ssg
+pydub
+huggingface_hub
 fastrtc[vad]
 ollama
 edge-tts
