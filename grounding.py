@@ -81,9 +81,10 @@ def point_words(m):
 def numbers(text):
     """Every number as plain digits; a lone digit only as a rate or amount, marked with its kind: "7#", "7#บาท"."""
     toks = []
-    # ร้อยละ N = % N, so its ร้อย is no 100. The ";" keeps the number before it off the rate: "ข้อ 3 ร้อยละ 7" read 3%
-    # and lost the 7 (NUM then % matched first), so a true ร้อยละเจ็ด was cut on a source "ปี 2567 ร้อยละ 7"
-    text = re.sub(r"ร้อย\s*ละ", ";%", thai_digit_to_arabic_digit(CODE.sub(" ", text)))
+    # ร้อยละ N = % N, so its ร้อย is no 100; เรียบร้อย is a word, not 100; spaced/dashed 0xx phone digits are one number
+    text = re.sub(r"เรียบร้อย", "เรียบ", thai_digit_to_arabic_digit(CODE.sub(" ", text)))
+    text = re.sub(r"(?<!\d)0\d(?:[- ]?\d){7,8}(?!\d)", lambda m: re.sub(r"[- ]", "", m[0]), text)
+    text = re.sub(r"ร้อย\s*ละ", ";%", text)
     text = DIGIT_UNIT.sub(lambda m: f" {sum(Decimal(n.replace(',', '')) * int(UNIT[u]) for n, u in re.findall(rf'({NUM.pattern})\s*({"|".join(UNIT)})', m[0])):f} ", text)
     text = POINT.sub(point_words, text)
     # digits after จุด are pythainlp's own: สิบเอ็ดจุดหกเจ็ด came out 11.067 when the run went first (call 09:50)
@@ -123,10 +124,11 @@ def is_number(word):
         return False
 
 
-# spoken readings of what sources abbreviate: the boss must say "4 พ.ย." as "สี่พฤศจิกายน"; an era name adds
-# nothing to a year (numbers() checks the year), so it is always fine
-READINGS = dict(zip("ม.ค. ก.พ. มี.ค. เม.ย. พ.ค. มิ.ย. ก.ค. ส.ค. ก.ย. ต.ค. พ.ย. ธ.ค.".split(), (
-    "มกราคม กุมภาพันธ์ มีนาคม เมษายน พฤษภาคม มิถุนายน กรกฎาคม สิงหาคม กันยายน ตุลาคม พฤศจิกายน ธันวาคม").split()))
+# spoken readings of what sources abbreviate: the boss must say "4 พ.ย." as "สี่พฤศจิกายน", "3%" as "สามเปอร์เซ็นต์"
+# (numbers() still checks exact rates), and "SQL/query" as "คิวรี่"; an era name adds nothing to a year
+READINGS = {**dict(zip("ม.ค. ก.พ. มี.ค. เม.ย. พ.ค. มิ.ย. ก.ค. ส.ค. ก.ย. ต.ค. พ.ย. ธ.ค.".split(), (
+    "มกราคม กุมภาพันธ์ มีนาคม เมษายน พฤษภาคม มิถุนายน กรกฎาคม สิงหาคม กันยายน ตุลาคม พฤศจิกายน ธันวาคม").split())),
+    "%": "เปอร์เซ็นต์ ร้อยละ", "query": "คิวรี่ คิวรี", "sql": "คิวรี่ คิวรี"}
 
 
 # how Thai speakers read Latin letters (ลุงจืด 2026-11-04 "ระบบพีโอเอส = ระบบ POS"): the boss must say a source's
@@ -163,7 +165,8 @@ def new_words(piece, sources):
     goes to the meaning judge; one made of source words passes as is."""
     # ponytail: source words put together into a new claim pass ("ยกเลิกผ่านระบบบัญชีที่ใช้อยู่"); judging every
     # phrase instead costs ~1 s each and the 8B judge says yes to almost all of them anyway
-    low = " ".join([sources, "พุทธศักราช คริสต์ศักราช", *(r for a, r in READINGS.items() if a in sources), *spelled(sources)]).lower()
+    src_low = sources.lower()
+    low = " ".join([sources, "พุทธศักราช คริสต์ศักราช", *(r for a, r in READINGS.items() if a.lower() in src_low), *spelled(sources)]).lower()
     # digits too: "50.00" for calc's 50 went to the judge as a new word and the table row was cut (eval 2026-11-08)
     seen = lambda w: len(w) > 1 and (w in STOP or is_number(w) or NUM.fullmatch(w) or w.lower() in low)
     def known(w):  # a source word, or one glued to a stopword by the tokenizer: ใช้กับ = ใช้ + กับ
@@ -277,4 +280,9 @@ if __name__ == "__main__":
     assert numbers("ข้อ 3 ร้อยละ 7 ต่อปี") == {"7#"} and not unsourced("ร้อยละเจ็ด", numbers("ตั้งแต่ปี 2567 ร้อยละ 7"))
     assert numbers("ลด 5% 3 รายการ") == {"5#"}
     assert not new_words("| ของเกิน | 50 | 53 | +3 | 12 | +36 |", "ของเกิน 53-50 = 3 3*12 = 36")  # signed single-digit calc diff
+    assert numbers("เรียบร้อยครับ ผมฝากเรื่องไว้แล้ว") == set()  # เรียบร้อย is no 100
+    assert not unsourced("ติดต่อกลับที่เบอร์ศูนย์แปดหนึ่งสองสามสี่ห้าหกเจ็ดแปดครับ", numbers("เบอร์ 081 234 5678 ครับ"))
+    assert not new_words("หักสามเปอร์เซ็นต์ครับ", "หัก 3%") and "เปอร์เซ็นต์" in new_words("หักสามเปอร์เซ็นต์ครับ", "หัก 3 บาท")
+    assert not new_words("มีคิวรี่ความเคลื่อนไหวครับ", "SQL ความเคลื่อนไหว")
+    assert unsourced("ติดต่อกลับที่เบอร์ศูนย์แปดหนึ่งสองสามสี่ห้าหกเจ็ดเก้าครับ", numbers("เบอร์ 081 234 5678 ครับ")) == {"0812345679"}
     print("grounding self-test OK")

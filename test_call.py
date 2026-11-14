@@ -55,6 +55,10 @@ va.judge, turn = (lambda sources, piece, before: False), {}
 list(va.panel_events(iter([f"#### {C.SAMPLE_LABEL}\n### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)\n| ขั้น | ทำอะไร |\n"]), [], set(), "", turn))
 va.judge = real_judge
 assert turn["kept"][:2] == [f"#### {C.SAMPLE_LABEL}", "### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)"] and C.SAMPLE_LABEL not in va.OWN_WORDS, turn
+va.judge, turn = (lambda sources, piece, before: "WH02" in piece), {}
+list(va.panel_events(iter(["```\n- WH02 คลังสาขา\n```\n```sql\nSELECT x FROM bad_tbl\n```\n"]), [], set(), "", turn))
+va.judge = real_judge
+assert "- WH02 คลังสาขา" in turn["kept"] and "SELECT x FROM bad_tbl" not in turn["kept"], turn["kept"]
 # a customer's message for the owner (2026-11-11): only a number the caller said is stored, the page escapes it all
 C.LEADS_PATH, real_notify, va.notify_owner = os.path.join(tempfile.mkdtemp(), "leads.jsonl"), va.notify_owner, lambda: None
 said = "ผมชื่อสมชัย เบอร์ ศูนย์แปดหนึ่ง 234 5678 ครับ"
@@ -104,6 +108,11 @@ assert va.code_unsourced("SELECT SUM(COALESCE(d.qty_2,0) * d.calc_flag) AS stock
                          va.grounding.numbers(src), src) == set()  # its own AS name, and qty_2,0 is no number 20
 assert va.code_unsourced("AND d.calc_flag IN (12, 310, 54, 55, 72, 73)", va.grounding.numbers(src), src) == set()
 assert va.code_unsourced("FROM ic_stock_balance s WHERE x = 999", va.grounding.numbers(src), src) == {"ic_stock_balance", "999"}
+sql_own = set()
+assert va.code_unsourced("WITH stock AS (", set(), src, sql_own) == set() and "stock" in sql_own
+assert va.code_unsourced("SELECT SUM(d.qty_2)::numeric(18,2) AS qty_in FROM ic_inventory d)", set(), src, sql_own) == set()
+assert va.code_unsourced("SELECT qty_in FROM stock", set(), src, sql_own) == set()  # numeric(18,2) + earlier CTE/AS pass
+assert len(va.calc("\n".join(f"แถว {i}: {i}*10" for i in range(1, 36)))[1].splitlines()) == 36  # supports 30+ row tables
 chat, va.worker_chat = va.worker_chat, lambda messages, tools: ("LOT อัตโนมัติ\nเปลี่ยนเรื่อง: LOT FIFO | ระบบรถยนต์", [])
 talk = [{"role": "user", "content": "LOT FIFO คิดยังไง"}, {"role": "assistant", "content": "คิดแบบถัวเฉลี่ยครับ"}]
 assert va.search_words(talk, "รถอัตโนมัติ") == ("LOT อัตโนมัติ", ("LOT FIFO", "ระบบรถยนต์"))
@@ -144,6 +153,15 @@ for toks, want in ((["ขอโทษ", "ครับ ", "ฟังไม่ช�
     va.SESSIONS[""], va.llm_tokens = [], (lambda *a, toks=toks: iter(toks))
     bots = [o[1].args[0]["text"] for o in va.reply((16000, np.zeros(16000))) if isinstance(o, tuple)]
     assert bots == want, bots
+# call 2026-11-14 05:44..06:08: a lone "ได้ครับ " joins the next sentence; if the sentence is cut, a valid [จอ] gets
+# SCREEN_ONLY (never a clipped "ได้ครับ" or false yes, never "หาไม่เจอ"), and no [จอ] falls to CUT_ALL
+va.SESSIONS[""], va.llm_tokens = [], (lambda *a: iter(["ได้ครับ ", "ฟังเสียงของคุณชัดเจนดีมากเลย", "ครับ"]))
+assert [o[1].args[0]["text"] for o in va.reply((16000, np.zeros(16000))) if isinstance(o, tuple)] == ["ได้ครับ ฟังเสียงของคุณชัดเจนดีมากเลยครับ"]
+va.judge = lambda sources, piece, before: False
+va.SESSIONS[""], va.llm_tokens = [], (lambda *a: iter(["ได้ครับ ", "ประโยคแต่งที่ยาวเกินยี่สิบตัว", "ครับ ", "[จอ]\n| ลำดับ | รายการ |\n|---|---|\n"]))
+assert [o[1].args[0]["text"] for o in va.reply((16000, np.zeros(16000))) if isinstance(o, tuple)] == [va.SCREEN_ONLY]
+va.SESSIONS[""], va.llm_tokens = [], (lambda *a: iter(["ได้ครับ ", "ประโยคแต่งที่ยาวเกินยี่สิบตัว", "ครับ"]))
+assert [o[1].args[0]["text"] for o in va.reply((16000, np.zeros(16000))) if isinstance(o, tuple)] == [va.CUT_ALL]
 va.judge = real_judge
 va.dispatch = dispatch
 va.early_words, va.speak, va.worker_chat, va.llm_tokens, va.SESSIONS[""] = saved
@@ -204,9 +222,17 @@ gen, t = va.dispatch([("slow", {})], ["x"], {}, {"slow": lambda: time.sleep(1.5)
 next(gen)
 gen.close()
 assert time.perf_counter() - t < 1, time.perf_counter() - t
+assert list(va.FILLER_TEXT) == ["hello"]
+outs = list(va.dispatch([("web_search", {"query": "x"})], [], {}, {"web_search": lambda query: ([], "ok")}))
+assert not any(isinstance(o, tuple) for o in outs), outs  # no spoken "ขอตรวจสอบ/ขอค้น…" filler before the answer
 # log 2026-11-09: a plain sum went without calc; a phone's dashes are no sum
 assert all(va.SUM_ASK.search(va.masked(s)) for s in ("50 หาร 0.5 บวก 50", "120 x 3 เท่าไหร่", "ลบ 7 แล้วเหลือเท่าไหร่"))
 assert not any(va.SUM_ASK.search(va.masked(s)) for s in ("เบอร์ 081-123-4567 ครับ", "ต้นทุนแบบถัวเฉลี่ย", "ลบเอกสารยังไง"))
+assert va.swarm_queries("ลูกหนี้ หักกลบ ; รายงานลูกหนี้ | ลูกหนี้ หักกลบ", "x", []) == ["ลูกหนี้ หักกลบ", "รายงานลูกหนี้"]
+assert va.CALC_ASK.search("วิธีคำนวณต้นทุนสินค้า") and not va.CALC_ASK.search("เก็บได้กี่คลังสินค้า กี่ location")
+assert va.CALC_ASK.search("วิธีคิดภาษีมูลค่าเพิ่ม") and not va.CALC_ASK.search("ออกใบกำกับภาษีขายพิมพ์ผิดยกเลิกยังไง")
+assert va.FAST_CHAT.match("สวัสดีครับ") and not va.FAST_CHAT.match("สวัสดีครับ ขายวัสดุก่อสร้าง")
+assert not va.grounding.new_words("[การ์ด] ลูกหนี้: 50,000 | เจ้าหนี้: 30,000", f"{va.OWN_WORDS} ลูกหนี้ เจ้าหนี้")
 # TALK_WORDS: the judge still sees every made-up line, and asks to repeat/spell/explain need no judge
 from eval_talk import MUST_CUT
 assert all(va.grounding.new_words(line, f"{va.OWN_WORDS}\n{va.TALK_WORDS}") for _, line in MUST_CUT)

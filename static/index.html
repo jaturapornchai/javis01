@@ -22,169 +22,242 @@
 </script>
 <style>
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;overflow:hidden;background:radial-gradient(60% 45% at 15% 0%,rgba(124,58,237,.28),transparent),radial-gradient(50% 40% at 90% 5%,rgba(14,165,233,.24),transparent),radial-gradient(70% 50% at 50% 105%,rgba(236,72,153,.2),transparent),#05070f;color:#e8ecf5;font-family:"Noto Sans Thai","Leelawadee UI","Sarabun",Tahoma,sans-serif}
+:root{--lw:228px;--rw:248px;--zoom:1}
+@media (min-width:901px) and (max-width:1279px){:root{--lw:196px;--rw:212px}}
+html,body{margin:0;height:100dvh;overflow:hidden;background:radial-gradient(60% 45% at 15% 0%,rgba(124,58,237,.28),transparent),radial-gradient(50% 40% at 90% 5%,rgba(14,165,233,.24),transparent),radial-gradient(70% 50% at 50% 105%,rgba(236,72,153,.2),transparent),#05070f;color:#e8ecf5;font-family:"Noto Sans Thai","Leelawadee UI","Sarabun",Tahoma,sans-serif}
+body{display:flex;flex-direction:column}
 button,summary{font:inherit;color:inherit}
 :focus-visible{outline:2px solid #22d3ee;outline-offset:2px}
-.glass{background:rgba(10,14,28,.62);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:12px}
+.glass{background:rgba(10,14,28,.66);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.11);border-radius:10px}
 
-/* top bar: every child is 40px tall and centered on the same line */
-#top{position:fixed;top:0;left:0;right:0;display:flex;align-items:center;gap:12px;padding:12px 16px;z-index:5}
-#top h1{margin:0;font-size:18px;font-weight:600;height:40px;line-height:40px;margin-right:auto}
-#top .hint{height:40px;line-height:40px;font-size:14px;color:#aab4cc}
-.btn{height:40px;padding:0 18px;border-radius:20px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);cursor:pointer;line-height:1;display:inline-flex;align-items:center;justify-content:center}
+/* top bar: 46px compact header, every control is 32px tall on one baseline */
+#top{flex:none;display:flex;align-items:center;gap:8px;height:46px;padding:0 10px;z-index:6}
+#top h1{margin:0;font-size:15px;font-weight:600;height:32px;line-height:32px;white-space:nowrap}
+#topState{height:24px;line-height:24px;padding:0 9px;border-radius:12px;font-size:12px;font-weight:600;background:rgba(127,166,224,.15);border:1px solid rgba(127,166,224,.4);color:#93c5fd;white-space:nowrap}
+#topState[data-s=listening]{background:rgba(34,211,238,.16);border-color:rgba(34,211,238,.55);color:#67e8f9}
+#topState[data-s=thinking],#topState[data-s=searching]{background:rgba(251,191,36,.16);border-color:rgba(251,191,36,.55);color:#fde68a}
+#topState[data-s=speaking]{background:rgba(167,139,250,.18);border-color:rgba(167,139,250,.55);color:#ddd6fe}
+#top .hint{height:32px;line-height:32px;font-size:12.5px;color:#8e9ab8;margin-right:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:1180px){#top .hint{display:none}#topState{margin-right:auto}}
+.tgrp{display:inline-flex;align-items:center;gap:4px}
+.btn{height:32px;padding:0 13px;border-radius:16px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);cursor:pointer;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;white-space:nowrap;font-size:13.5px}
+.btn.sm{height:32px;padding:0 11px;font-size:13px}
+.btn.xs{height:26px;padding:0 9px;border-radius:13px;font-size:12px}
 .btn:hover:not(:disabled){background:rgba(255,255,255,.16)}
 .btn:disabled{opacity:.45;cursor:default}
 .btn.primary{background:#0e7490;border-color:#22d3ee}
 .btn.danger{background:#9f1239;border-color:#fb7185}
-.btn[aria-pressed="true"]{background:#92400e;border-color:#fbbf24}
+.btn[aria-pressed="true"]{background:rgba(14,116,144,.42);border-color:#22d3ee;color:#e0f2fe}
+#micBtn[aria-pressed="true"]{background:#92400e;border-color:#fbbf24;color:#fef3c7}
+.cnt{display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;border-radius:9px;background:#22d3ee;color:#05070f;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}
+.cnt[hidden]{display:none}
 
-/* device picker: native <details> dropdown under its 40px summary button */
+/* device picker */
 #dev{position:relative}
 #dev summary{list-style:none}
 #dev summary::-webkit-details-marker{display:none}
-#dev>div{position:absolute;right:0;top:48px;width:min(320px,90vw);padding:12px;display:flex;flex-direction:column;gap:10px;z-index:7}
-#top:has(#dev[open]){z-index:7} /* the popover's own 7 only counts inside #top (fixed = own stacking context), under #note and #hud at 6 */
+#dev>div{position:absolute;right:0;top:38px;width:min(320px,90vw);padding:12px;display:flex;flex-direction:column;gap:10px;z-index:8}
 #dev .f{display:flex;flex-direction:column;gap:4px;font-size:13px;color:#aab4cc}
 #dev .row{display:flex;align-items:center;gap:8px}
-#dev .row .btn{height:36px;padding:0 12px;font-size:13px;flex:none}
+#dev .row .btn{height:34px;padding:0 12px;font-size:13px;flex:none}
 #dev meter{width:100%;height:10px}
-#dev select{flex:1;min-width:0;height:36px;border-radius:8px;background:#0b1020;color:#e8ecf5;border:1px solid rgba(255,255,255,.2);padding:0 8px;font:inherit;font-size:14px}
+#dev select{flex:1;min-width:0;height:34px;border-radius:8px;background:#0b1020;color:#e8ecf5;border:1px solid rgba(255,255,255,.2);padding:0 8px;font:inherit;font-size:13.5px}
 
-#note{position:fixed;top:64px;left:50%;transform:translateX(-50%);padding:8px 16px;z-index:6;font-size:14px;color:#fde68a}
+#note{position:fixed;top:52px;left:50%;transform:translateX(-50%);padding:6px 14px;z-index:7;font-size:13.5px;color:#fde68a}
 #note:empty{display:none}
 
-/* the side columns' widths, one place: narrower on a laptop so the panel keeps room */
-:root{--lw:280px;--cw:min(320px,42vw)}
-@media (min-width:901px) and (max-width:1279px){:root{--lw:220px;--cw:240px}}
-#left{position:fixed;left:16px;top:72px;bottom:196px;width:var(--lw);max-width:80vw;z-index:4;display:flex;flex-direction:column;gap:8px;pointer-events:none}
-#left>details{pointer-events:auto;display:flex;flex-direction:column;padding:8px 12px;min-height:0}
-#tr[open]{flex:1}
-/* team panel: one row per member, dot + name + status share one line */
-#teamlist{list-style:none;margin:6px 0 0;padding:0;font-size:13px;line-height:1.5;max-height:34vh;overflow-y:auto}
-#teamlist li{padding:3px 4px;border-top:1px solid rgba(255,255,255,.06);cursor:pointer;border-radius:6px}
+/* mobile tab bar (hidden on desktop) */
+#mtabs{display:none;flex:none;gap:6px;padding:0 8px 6px}
+#mtabs .btn{flex:1;height:30px;font-size:13px;border-radius:10px}
+
+/* main full-viewport workspace */
+#ws{flex:1;min-height:0;display:flex;gap:8px;padding:0 8px 8px;position:relative}
+#left{flex:none;width:var(--lw);display:flex;flex-direction:column;gap:8px;min-height:0}
+#left[hidden]{display:none}
+#left>details{display:flex;flex-direction:column;padding:6px 10px;min-height:0}
+#team{flex:none;max-height:38%}
+#tr{flex:none}
+#tr[open]{flex:1;min-height:0}
+#tr summary,#team summary{cursor:pointer;min-height:24px;line-height:1.5;font-size:calc(13.5px * clamp(.88,var(--zoom,1),1.25));font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* team panel */
+#teamlist{list-style:none;margin:4px 0 0;padding:0;font-size:calc(12.5px * var(--zoom,1));line-height:1.4;overflow-y:auto}
+#teamlist li{padding:2px 4px;border-top:1px solid rgba(255,255,255,.06);cursor:pointer;border-radius:5px}
 #teamlist li:hover{background:rgba(255,255,255,.06)}
-#teamlist .row{display:flex;align-items:center;gap:8px;height:22px}
-#teamlist .dot{width:10px;height:10px;border-radius:50%;flex:none;background:var(--c);opacity:.3}
+#teamlist .row{display:flex;align-items:center;gap:6px;min-height:20px}
+#teamlist .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--c);opacity:.35}
 #teamlist .run .dot{opacity:1;box-shadow:0 0 8px var(--c);animation:pulse 1s ease-in-out infinite}
 #teamlist .done .dot{opacity:1}
 #teamlist .nm{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#teamlist .st{flex:none;color:#7d89a6;white-space:nowrap}
+#teamlist .st{flex:none;color:#7d89a6;font-size:.92em;white-space:nowrap}
 #teamlist .run .st{color:#fbbf24}#teamlist .done .st{color:#4ade80}#teamlist .none .st{color:#f87171}
-#teamlist .tk{padding-left:18px;color:#7d89a6;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#teamlist .tk{padding-left:14px;color:#8a96b3;font-size:calc(11.5px * var(--zoom,1));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #teamlist .tk:empty{display:none}
 #teamlist .boss .nm{color:#67e8f9}
 @keyframes pulse{50%{transform:scale(1.45)}}
-#tr summary,#team summary{cursor:pointer;height:28px;line-height:28px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#trlist{list-style:none;margin:8px 0 0;padding:0;overflow-y:auto;flex:1;font-size:14px;line-height:1.5}
-#trlist li{margin-bottom:6px}
+
+/* transcript */
+#trlist{list-style:none;margin:6px 0 0;padding:0 0 92px;overflow-y:auto;flex:1;font-size:calc(13px * var(--zoom,1));line-height:1.42}
+#trlist li{margin-bottom:5px}
 #trlist .u{color:#67e8f9}
 #trlist .b{color:#e8ecf5}
+#trlist .arc{margin:-2px 0 7px}
+#trlist .trview{background:rgba(34,211,238,.08);border:1px solid rgba(34,211,238,.28);color:#7dd3fc;border-radius:6px;padding:2px 8px;font-size:12px;cursor:pointer}
+#trlist .trview:hover{background:rgba(34,211,238,.18)}
 
-/* cards: one group per question, newest on top, all kept to scroll back to; every card opens in the panel */
-#cards{position:fixed;right:16px;top:72px;bottom:16px;width:var(--cw);display:flex;flex-direction:column;gap:10px;overflow-y:auto;z-index:4;perspective:900px}
-.turn{display:flex;flex-direction:column;gap:6px}
-.turn>h4{margin:4px 2px 0;font-size:12px;line-height:18px;color:#67e8f9;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.card{display:block;padding:8px 10px;color:inherit;text-decoration:none;transform-origin:right center;animation:cin .6s cubic-bezier(.2,.8,.2,1) both}
-a.card:hover{border-color:#a78bfa;background:rgba(30,27,75,.7)}
-@keyframes cin{from{opacity:0;transform:translateX(60px) rotateY(-28deg)}to{opacity:1;transform:none}}
-.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;color:#05070f;font-weight:600}
-.badge.web{background:#60a5fa}.badge.docs{background:#4ade80}.badge.bcbrain{background:#fb923c}.badge.gmail{background:#f87171}.badge.calendar{background:#a78bfa}.badge.drive{background:#facc15}.badge.desktop{background:#2dd4bf}.badge.calc{background:#e879f9}.badge.message{background:#34d399}.badge.deepseek{background:#818cf8}.badge.other{background:#9ca3af}
-.card h3{margin:4px 0 2px;font-size:14px;line-height:1.35}
-.card p{margin:0;font-size:12.5px;line-height:1.45;color:#c3cbe0;display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+/* center column: panel eats all spare vertical space, subtitles appear only while text is present */
+#center{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;gap:6px}
+#panel{flex:1;min-height:0;display:flex;flex-direction:column;padding:8px 14px;animation:pin .35s ease both}
+@keyframes pin{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+#panel .ph{flex:none;display:flex;align-items:center;gap:8px;min-height:28px;margin:0 0 6px;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:6px}
+#panel h2{margin:0;flex:1;min-width:0;height:26px;font-size:14.5px;line-height:26px;color:#cbd5e1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#pback[hidden],#copyBtn[hidden]{display:none}
+#zoom{display:inline-flex;align-items:center;gap:4px;flex:none}
+#zoom .zlbl{height:26px;line-height:26px;font-size:12px;color:#94a3b8;margin-right:2px;white-space:nowrap}
+#zOut,#zIn{width:26px;padding:0;font-size:15px;font-weight:600}
+#zPct{min-width:46px;padding:0 6px;font-variant-numeric:tabular-nums}
 
-/* the HUD ring floats over everything (ลุงจืด 2026-11-09 "เอาลอยไว้ด้านหน้า ปรับขนาดได้ ย้ายได้"): drag it, drag its corner
-   to resize, double-click puts it back here; its color is the state, its spin how hard it works */
-#hud{position:fixed;left:calc(100vw - 174px);top:calc(100vh - 174px);width:150px;aspect-ratio:1;z-index:6;color:#7fa6e0;transition:color .6s;cursor:grab;touch-action:none;user-select:none;container-type:inline-size}
-#hud[data-s=listening]{color:#22d3ee}#hud[data-s=thinking],#hud[data-s=searching]{color:#fbbf24}#hud[data-s=speaking]{color:#a78bfa}
-#hud.drag{cursor:grabbing}
-#hud::before{content:"";position:absolute;inset:3%;border-radius:50%;background:radial-gradient(circle,rgba(6,10,22,.85) 60%,rgba(6,10,22,.4) 72%,transparent 73%);backdrop-filter:blur(6px)}
-#hud svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;filter:drop-shadow(0 0 4px currentColor)}
-#pill{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:56%;font-size:clamp(10px,9cqw,24px);line-height:1.3;color:#e8ecf5;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
-#hud .grip{position:absolute;right:0;bottom:0;width:18px;height:18px;border:solid currentColor;border-width:0 2px 2px 0;border-radius:0 0 6px 0;cursor:nwse-resize;opacity:0;transition:opacity .2s}
-#hud:hover .grip,#hud.drag .grip{opacity:.8}
-@media (hover:none){#hud .grip{opacity:.5}}
+/* turn history tabs inside #panel */
+#phist{flex:none;display:flex;align-items:center;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:4px;border-bottom:1px solid rgba(255,255,255,.06);scrollbar-width:thin}
+#phist[hidden]{display:none}
+#phist .hchip{height:24px;padding:0 10px;border-radius:12px;font-size:12px;flex:none;max-width:220px;overflow:hidden;text-overflow:ellipsis}
 
-#subs{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);width:min(760px,calc(100vw - 600px));min-width:300px;padding:12px 20px;text-align:center;z-index:3;background:radial-gradient(ellipse at center,rgba(5,7,15,.75),rgba(5,7,15,.35));border-radius:16px}
-#subs:has(#bot:empty):has(#user:empty){visibility:hidden}
-/* chat bar: input and button share one 40px line */
-#chat{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);width:min(760px,calc(100vw - 700px));min-width:300px;display:flex;align-items:center;gap:8px;padding:4px 4px 4px 8px;border-radius:24px;z-index:5;margin:0}
-#chat:focus-within{border-color:#22d3ee}
-#chat input{flex:1;min-width:0;height:40px;border:0;outline:0;background:transparent;color:#e8ecf5;font:inherit;font-size:16px;padding:0 8px}
-#chat input::placeholder{color:#7d89a6}
-#user{font-size:18px;color:#67e8f9;margin-bottom:4px;min-height:0}
-#bot{font-size:30px;line-height:1.4;color:#fff;max-height:4.3em;overflow:hidden;text-shadow:0 2px 8px #000}
-#bot span{animation:sin .5s ease-out both}
-@keyframes sin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-
-/* panel mode, always on (ลุงจืด 2026-11-04 "เน้นแสดงข้อมูลแน่นๆ"): the info panel fills the screen, the HUD floats over it */
-#panel{position:fixed;left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);top:72px;bottom:184px;z-index:3;display:flex;flex-direction:column;padding:12px 18px;animation:pin .5s ease both}
-#panel .ph{display:flex;align-items:center;gap:10px;margin:0 0 6px}
-#panel h2{margin:0;flex:1;min-width:0;font-size:15px;line-height:30px;color:#aab4cc;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#pback{height:30px;padding:0 12px;font-size:13px;flex:none}
-#pback[hidden]{display:none}
-#pbody:empty::before{content:"ถามได้เลย คำตอบละเอียดจะแสดงตรงนี้ · กดการ์ดด้านขวาหรือแถวลูกทีมเพื่อดูต่อ";color:#7d89a6}
-@keyframes pin{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
-.md{font-size:clamp(15px,.45vw + 10px,19px);line-height:1.65;overflow-wrap:anywhere}
-#pbody{flex:1;min-height:0;overflow-y:auto}
-.md h3{font-size:1.4em;margin:.5em 0 .3em}.md h4{font-size:1.2em;margin:.5em 0 .3em}.md h5{font-size:1.05em;margin:.5em 0 .3em}
-.md p{margin:.4em 0}.md ul,.md ol{margin:.4em 0;padding-left:1.4em}
-.md table{border-collapse:collapse;margin:.6em 0;width:100%}
-.md th,.md td{border:1px solid rgba(255,255,255,.18);padding:5px 10px;text-align:left}
-.md th{background:rgba(255,255,255,.08)}
-.md code{background:rgba(255,255,255,.12);padding:0 5px;border-radius:4px;font-family:Consolas,monospace;font-size:.92em}
-.md pre{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:8px 12px;margin:.6em 0;overflow-x:auto}
+/* dense reading typography + accounting tables */
+#pbody{flex:1;min-height:0;overflow-y:auto;padding-right:4px}
+body.noleft #pbody{padding-bottom:88px}
+#pbody:empty::before{content:"ถามได้เลย คำตอบและตารางจะแสดงเต็มพื้นที่ตรงนี้ · กดสลับแถบด้านบนเพื่อดูข้อมูลแต่ละรอบย้อนหลังได้";color:#7d89a6}
+.md{font-size:calc(clamp(13.5px,.25vw + 11.2px,15.8px) * var(--zoom,1));line-height:1.5;overflow-wrap:anywhere}
+.md h3{font-size:1.22em;margin:.55em 0 .22em;padding-left:.45em;border-left:3px solid #22d3ee;color:#f1f5f9}
+.md h4{font-size:1.1em;margin:.48em 0 .2em;color:#e0f2fe}
+.md h5{font-size:1em;margin:.4em 0 .18em;color:#cbd5e1}
+.md>:first-child{margin-top:0}
+.md p{margin:.28em 0}
+.md ul,.md ol{margin:.28em 0;padding-left:1.35em}
+.md li{margin:.12em 0}
+.md .tw{max-width:100%;overflow:auto;margin:.45em 0;border:1px solid rgba(255,255,255,.12);border-radius:8px}
+.md table{border-collapse:collapse;width:100%;font-size:.94em}
+.md th,.md td{border-bottom:1px solid rgba(255,255,255,.12);border-right:1px solid rgba(255,255,255,.08);padding:.26em .6em;text-align:left;vertical-align:top}
+.md th:last-child,.md td:last-child{border-right:0}
+.md tr:last-child td{border-bottom:0}
+.md thead th{background:rgba(15,23,42,.95);color:#cbd5e1;font-weight:600;position:sticky;top:0;z-index:1}
+.md tbody tr:nth-child(even){background:rgba(255,255,255,.025)}
+.md tbody tr:hover{background:rgba(34,211,238,.07)}
+.md th.num,.md td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.md code{background:rgba(255,255,255,.12);padding:0 5px;border-radius:4px;font-family:Consolas,monospace;font-size:.9em}
+.md .codebox{position:relative;margin:.45em 0}
+.md .codebox .cpcode{position:absolute;top:6px;right:6px;z-index:1;height:22px;padding:0 8px;border-radius:8px;font-size:11.5px;background:rgba(15,23,42,.88)}
+.md pre{background:rgba(6,10,22,.82);border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:8px 58px 8px 10px;margin:0;overflow-x:auto;font-size:.9em;line-height:1.45}
 .md pre code{background:none;padding:0;white-space:pre}
 .md a{color:#7dd3fc}
 .md a.wl{color:#f0abfc;text-decoration:underline dotted}
-.md .fi{animation:sin .5s ease-out both}
-/* tables (ลุงจืด 2026-11-09 "motion graphic"): rows slide in one after another, a light sweeps each new row and its
-   numbers count up; a wide table scrolls sideways instead of squeezing its columns */
-.md .tw{max-width:100%;overflow-x:auto}
-.md tr.in{animation:rin .5s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--r,0) * 140ms)}
-.md tr.in td{animation:rsweep 1.4s ease-out both;animation-delay:calc(var(--r,0) * 140ms + .15s)}
-@keyframes rin{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}
-@keyframes rsweep{0%{background:rgba(167,139,250,.38)}100%{background:transparent}}
-/* [ขั้นตอน] a → b → c: steps pop in one by one, numbered, arrows between, a glow runs along them */
-.md .flow{list-style:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px 28px;margin:.7em 0;padding:0;counter-reset:st}
-.md .flow li{position:relative;padding:6px 12px 6px 36px;border-radius:10px;background:rgba(124,58,237,.18);border:1px solid rgba(167,139,250,.45);counter-increment:st;animation:fpop .45s cubic-bezier(.2,.8,.2,1) both,fglow 3s ease-in-out infinite;animation-delay:calc(var(--i) * .25s),calc(var(--i) * 3s / var(--n))}
-.md .flow li::before{content:counter(st);position:absolute;left:8px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:50%;background:#a78bfa;color:#05070f;font-size:12px;font-weight:700;line-height:20px;text-align:center}
-/* the mark over a numbered list: long steps go one under another, arrows point down */
-.md .flow.col{flex-direction:column;align-items:stretch;gap:16px}
-.md .flow.col li:not(:last-child)::after{content:"↓";right:auto;left:14px;top:auto;bottom:-17px;transform:none}
-.md .flow li.seen{animation-name:none,fglow}  /* already on screen while the answer streams: no second pop */
-.md .flow li:not(:last-child)::after{content:"→";position:absolute;right:-22px;top:50%;transform:translateY(-50%);color:#f0abfc;font-weight:700}
-@keyframes fpop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
-@keyframes fglow{0%,60%,100%{box-shadow:none}30%{box-shadow:0 0 16px rgba(240,171,252,.85);border-color:#f0abfc}}
-/* [แผนที่] place @lat,lon: OpenStreetMap embed, their credit shown */
-.md .map{margin:.7em 0}.md .map iframe{display:block;width:100%;height:260px;border:0;border-radius:10px;background:#0b1020}
-.md .map figcaption{font-size:13px;color:#aab4cc;margin-top:4px}
-#trlist summary{height:auto;line-height:1.5;font-weight:400;color:#aab4cc}
-#trlist .md{font-size:13px;padding-top:4px}
-body.panel #subs{left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);width:auto;min-width:0;transform:none;bottom:76px;padding:8px 16px}
-body.panel #chat{left:calc(var(--lw) + 32px);right:calc(var(--cw) + 32px);width:auto;min-width:0;transform:none}
-body.panel #bot{font-size:22px;max-height:2.9em}
-body.panel #user{font-size:15px}
+.md .fi{animation:sin .35s ease-out both}
+.md tr.in{animation:rin .4s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--r,0) * 110ms)}
+.md tr.in td{animation:rsweep 1.2s ease-out both;animation-delay:calc(var(--r,0) * 110ms + .12s)}
+@keyframes rin{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:none}}
+@keyframes rsweep{0%{background:rgba(167,139,250,.32)}100%{background:transparent}}
+
+/* [ขั้นตอน] compact steps */
+.md .flow{list-style:none;display:flex;flex-wrap:wrap;align-items:center;gap:.35em 1.4em;margin:.5em 0;padding:0;counter-reset:st;font-size:.94em}
+.md .flow li{position:relative;padding:.24em .62em .24em 1.9em;border-radius:8px;background:rgba(124,58,237,.18);border:1px solid rgba(167,139,250,.45);counter-increment:st;animation:fpop .35s cubic-bezier(.2,.8,.2,1) both,fglow 3s ease-in-out infinite;animation-delay:calc(var(--i) * .2s),calc(var(--i) * 3s / var(--n))}
+.md .flow li::before{content:counter(st);position:absolute;left:.5em;top:50%;transform:translateY(-50%);width:1.45em;height:1.45em;border-radius:50%;background:#a78bfa;color:#05070f;font-size:.75em;font-weight:700;line-height:1.45em;text-align:center}
+.md .flow.col{flex-direction:column;align-items:stretch;gap:.8em}
+.md .flow.col li:not(:last-child)::after{content:"↓";right:auto;left:.75em;top:auto;bottom:-.95em;transform:none}
+.md .flow li.seen{animation-name:none,fglow}
+.md .flow li:not(:last-child)::after{content:"→";position:absolute;right:-1.05em;top:50%;transform:translateY(-50%);color:#f0abfc;font-weight:700}
+@keyframes fpop{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:none}}
+@keyframes fglow{0%,60%,100%{box-shadow:none}30%{box-shadow:0 0 12px rgba(240,171,252,.8);border-color:#f0abfc}}
+.md .map{margin:.5em 0}.md .map iframe{display:block;width:100%;height:240px;border:0;border-radius:8px;background:#0b1020}
+.md .map figcaption{font-size:.8em;color:#aab4cc;margin-top:4px}
+.md .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.45em;margin:.48em 0}
+.md .kpi{display:flex;flex-direction:column;justify-content:center;gap:.14em;padding:.45em .68em;border-radius:8px;background:rgba(15,23,42,.74);border:1px solid rgba(34,211,238,.28);border-left:3px solid #22d3ee}
+.md .kpi .kl{font-size:.82em;line-height:1.3;color:#94a3b8}
+.md .kpi .kv{font-size:1.05em;line-height:1.35;color:#f8fafc;font-variant-numeric:tabular-nums}
+.md .casebox{margin:.45em 0;padding:.42em .72em;border-radius:0 8px 8px 0;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.22);border-left:3px solid #38bdf8;color:#e2e8f0}
+.md .casebox p{margin:.16em 0}
+.md .tree{list-style:none;padding-left:.25em}
+.md .tree>li{margin:.32em 0;padding:.24em .58em;border-radius:7px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.08)}
+.md .tree ul,.md .tree ol{list-style:none;margin:.22em 0 .1em .4em;padding-left:.75em;border-left:1.5px solid rgba(34,211,238,.38)}
+.md .tree ul li,.md .tree ol li{margin:.16em 0}
+.md .tree ul li::before{content:"├─ ";color:#38bdf8;font-family:Consolas,monospace;font-size:.88em}
+.md .tree ul li:last-child::before{content:"└─ "}
+
+/* live subtitles: collapse completely when empty or toggled off so #panel takes all space */
+#subs{flex:none;padding:5px 12px;text-align:center}
+#subs:has(#bot:empty):has(#user:empty){display:none}
+body.nosubs #subs{display:none}
+#user{font-size:calc(12.5px * clamp(.85,var(--zoom,1),1.3));color:#67e8f9;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#bot{font-size:calc(16.5px * var(--zoom,1));line-height:1.38;color:#fff;max-height:48px;overflow:hidden}
+#bot span{animation:sin .4s ease-out both}
+@keyframes sin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* compact chat bar */
+#chat{flex:none;display:flex;align-items:center;gap:6px;height:38px;padding:3px 4px 3px 10px;border-radius:19px}
+#chat:focus-within{border-color:#22d3ee}
+#chat input{flex:1;min-width:0;height:30px;border:0;outline:0;background:transparent;color:#e8ecf5;font:inherit;font-size:calc(14.5px * clamp(.9,var(--zoom,1),1.25));padding:0 4px}
+#chat input::placeholder{color:#7d89a6}
+#chat button{height:30px;padding:0 14px;border-radius:15px;font-size:13.5px}
+
+/* right cards sidebar: hidden when empty so center panel spans wider */
+#right{flex:none;width:var(--rw);display:flex;flex-direction:column;padding:6px 8px;min-height:0}
+#right[hidden]{display:none}
+#right .rh{flex:none;display:flex;align-items:center;justify-content:space-between;height:28px;margin-bottom:4px;padding:0 2px;font-size:13px;font-weight:600;color:#cbd5e1}
+#cards{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;overflow-y:auto;perspective:900px}
+#cards:empty::before{content:"การ์ดอ้างอิงที่ AI ค้นเจอจะแสดงตรงนี้";font-size:12.5px;color:#7d89a6;padding:6px 4px}
+.turn{display:flex;flex-direction:column;gap:5px}
+.turn>h4{margin:4px 2px 0;font-size:calc(11.5px * var(--zoom,1));line-height:1.35;color:#67e8f9;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card{display:block;padding:6px 8px;color:inherit;text-decoration:none;border-radius:8px;background:rgba(15,23,42,.55);border:1px solid rgba(255,255,255,.1);transform-origin:right center;animation:cin .45s cubic-bezier(.2,.8,.2,1) both}
+a.card:hover{border-color:#22d3ee;background:rgba(14,116,144,.22)}
+@keyframes cin{from{opacity:0;transform:translateX(36px) rotateY(-18deg)}to{opacity:1;transform:none}}
+.card .ch{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.badge{display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;color:#05070f;font-weight:700;flex:none}
+.badge.web{background:#60a5fa}.badge.docs{background:#4ade80}.badge.bcbrain{background:#fb923c}.badge.gmail{background:#f87171}.badge.calendar{background:#a78bfa}.badge.drive{background:#facc15}.badge.desktop{background:#2dd4bf}.badge.calc{background:#e879f9}.badge.message{background:#34d399}.badge.deepseek{background:#818cf8}.badge.other{background:#9ca3af}
+.card h3{margin:0;font-size:calc(13px * var(--zoom,1));line-height:1.3;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card p{margin:0;font-size:calc(12px * var(--zoom,1));line-height:1.38;color:#c3cbe0;display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+/* compact floating HUD ring at bottom-left so it never covers panel content */
+#hud{position:fixed;left:14px;bottom:14px;top:auto;width:84px;aspect-ratio:1;z-index:7;color:#7fa6e0;transition:color .6s;cursor:grab;touch-action:none;user-select:none;container-type:inline-size}
+body.noleft #hud{bottom:54px}
+#hud[data-s=listening]{color:#22d3ee}#hud[data-s=thinking],#hud[data-s=searching]{color:#fbbf24}#hud[data-s=speaking]{color:#a78bfa}
+#hud.drag{cursor:grabbing}
+#hud::before{content:"";position:absolute;inset:3%;border-radius:50%;background:radial-gradient(circle,rgba(6,10,22,.88) 60%,rgba(6,10,22,.45) 72%,transparent 73%);backdrop-filter:blur(6px)}
+#hud svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;filter:drop-shadow(0 0 4px currentColor)}
+#pill{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:66%;font-size:clamp(9.5px,10.5cqw,22px);line-height:1.25;color:#e8ecf5;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+#hud .grip{position:absolute;right:0;bottom:0;width:16px;height:16px;border:solid currentColor;border-width:0 2px 2px 0;border-radius:0 0 6px 0;cursor:nwse-resize;opacity:0;transition:opacity .2s}
+#hud:hover .grip,#hud.drag .grip{opacity:.85}
+@media (hover:none){#hud .grip{opacity:.5}}
+
 @media (max-width:900px){
-  /* phone: HUD top right, panel in the middle, a row of cards above the subtitles and the chat bar */
-  #top{gap:6px;padding:12px 8px}#top h1{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}#top .btn{padding:0 12px;white-space:nowrap}
-  #panel{left:8px;right:8px;top:72px;bottom:296px}
-  #hud{left:calc(100vw - 92px);top:68px;width:84px}
-  body.panel #subs{left:8px;right:8px;bottom:186px}body.panel #bot{font-size:18px}
-  body.panel #chat{left:8px;right:8px}
-  #cards{top:auto;bottom:64px;left:8px;right:8px;width:auto;height:118px;flex-direction:row;overflow:auto hidden}
-  .turn{flex-direction:row}.turn>h4{display:none}.card{flex:0 0 72vw}
-  #top .hint{display:none}#left{display:none}
-  #dev{position:static}#dev>div{position:fixed;left:8px;right:8px;top:64px;width:auto} /* the 320px popover ran off the left edge */
+  #top{gap:5px;padding:0 6px}#top h1{font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis}#topState{display:none}#top .tgrp{display:none}#top .btn{padding:0 9px;font-size:12.5px}
+  #mtabs{display:flex}
+  #ws{padding:0 6px 6px}
+  #left,#center,#right{width:100%!important;flex:1;min-width:0}
+  body[data-mtab="panel"] #left,body[data-mtab="panel"] #right{display:none!important}
+  body[data-mtab="panel"] #center{display:flex!important}
+  body[data-mtab="cards"] #left,body[data-mtab="cards"] #center{display:none!important}
+  body[data-mtab="cards"] #right{display:flex!important}
+  body[data-mtab="left"] #center,body[data-mtab="left"] #right{display:none!important}
+  body[data-mtab="left"] #left{display:flex!important}
+  #zoom .zlbl,#subBtn{display:none}
+  #panel{padding:8px 10px}
+  #hud{left:12px;bottom:52px;top:auto;width:68px}
+  #pbody,#cards,#trlist{padding-bottom:76px}
+  #dev{position:static}#dev>div{position:fixed;left:8px;right:8px;top:52px;width:auto}
 }
-@media (prefers-reduced-motion:reduce){#teamlist .dot,.card,#bot span,.gt,#panel,.md .fi,.md .flow li,.md tr.in,.md tr.in td{animation:none}}
+@media (prefers-reduced-motion:reduce){#teamlist .dot,.card,#bot span,#panel,.md .fi,.md .flow li,.md tr.in,.md tr.in td{animation:none}}
 </style>
 </head>
-<body class="panel">
+<body data-mtab="panel">
 <header id="top">
   <h1>ผู้ช่วยเสียงภาษาไทย</h1>
+  <span id="topState" data-s="idle">พร้อมคุย</span>
   <span class="hint">ควรใส่หูฟัง</span>
+  <div class="tgrp" role="group" aria-label="มุมมองหน้าจอ">
+    <button id="togLeft" class="btn sm" type="button" aria-pressed="true">ทีม/บทสนทนา</button>
+    <button id="togRight" class="btn sm" type="button" aria-pressed="false">แหล่งอ้างอิง <span id="cardCnt" class="cnt" hidden>0</span></button>
+    <button id="togMax" class="btn sm" type="button" aria-pressed="false">เต็มจอ</button>
+  </div>
   <details id="dev">
-    <summary class="btn" aria-label="เลือกไมค์และลำโพง">อุปกรณ์</summary>
+    <summary class="btn sm" aria-label="เลือกไมค์และลำโพง">อุปกรณ์</summary>
     <div class="glass">
       <div class="f"><label for="micSel">ไมค์ (ลองพูด แถบต้องขยับ)</label><select id="micSel"></select>
         <meter id="micLvl" min="0" max="1" value="0" aria-label="ระดับเสียงไมค์"></meter></div>
@@ -192,20 +265,46 @@ body.panel #user{font-size:15px}
         <div class="row"><select id="spkSel"></select><button id="spkTest" class="btn" type="button">ทดสอบเสียง</button></div></div>
     </div>
   </details>
-  <button id="micBtn" class="btn" type="button" disabled aria-label="เปิดหรือปิดไมค์" aria-pressed="false">ปิดไมค์</button>
-  <button id="callBtn" class="btn primary" type="button">เริ่มคุย</button>
+  <button id="micBtn" class="btn sm" type="button" disabled aria-label="เปิดหรือปิดไมค์" aria-pressed="false">ปิดไมค์</button>
+  <button id="callBtn" class="btn sm primary" type="button">เริ่มคุย</button>
 </header>
+<nav id="mtabs" aria-label="สลับมุมมองบนมือถือ">
+  <button class="btn sm" type="button" data-tab="panel" aria-pressed="true">ข้อมูล</button>
+  <button class="btn sm" type="button" data-tab="cards" aria-pressed="false">แหล่งอ้างอิง <span id="mCardCnt" class="cnt" hidden>0</span></button>
+  <button class="btn sm" type="button" data-tab="left" aria-pressed="false">ทีม/บทสนทนา</button>
+</nav>
 <div id="note" class="glass" role="status" aria-live="polite"></div>
-<div id="left">
-<details id="team" class="glass" open>
-  <summary id="teamsum">ทีมงาน</summary>
-  <ul id="teamlist"></ul>
-</details>
-<details id="tr" class="glass" open>
-  <summary>บทสนทนา</summary>
-  <ul id="trlist"></ul>
-</details>
-</div>
+<main id="ws">
+  <aside id="left">
+    <details id="team" class="glass" open>
+      <summary id="teamsum">ทีมงาน</summary>
+      <ul id="teamlist"></ul>
+    </details>
+    <details id="tr" class="glass" open>
+      <summary>บทสนทนา</summary>
+      <ul id="trlist"></ul>
+    </details>
+  </aside>
+  <div id="center">
+    <section id="panel" class="glass" aria-label="ข้อมูล">
+      <div class="ph">
+        <button id="pback" class="btn xs" type="button" hidden>‹ ย้อนกลับ</button>
+        <h2 id="ptitle">ข้อมูล</h2>
+        <button id="copyBtn" class="btn xs" type="button" hidden aria-label="คัดลอกข้อมูล">คัดลอก</button>
+        <button id="subBtn" class="btn xs" type="button" aria-pressed="true" aria-label="แสดงหรือซ่อนคำบรรยายเสียง">คำบรรยาย</button>
+        <div id="zoom" role="group" aria-label="ขนาดตัวอักษร"><span class="zlbl">ตัวอักษร</span><button id="zOut" class="btn xs" type="button" aria-label="ลดขนาดตัวอักษร">−</button><button id="zPct" class="btn xs" type="button" aria-label="คืนค่าขนาดตัวอักษร 100%">100%</button><button id="zIn" class="btn xs" type="button" aria-label="เพิ่มขนาดตัวอักษร">+</button></div>
+      </div>
+      <div id="phist" hidden aria-label="คำตอบรอบก่อนหน้า"></div>
+      <div id="pbody" class="md"></div>
+    </section>
+    <div id="subs" class="glass" aria-live="polite"><div id="user"></div><div id="bot"></div></div>
+    <form id="chat" class="glass" autocomplete="off"><input id="chatIn" maxlength="500" placeholder="พิมพ์ถามแทนการพูด แล้วกด Enter" aria-label="พิมพ์ข้อความถึงผู้ช่วย"><button class="btn primary" type="submit">ส่ง</button></form>
+  </div>
+  <aside id="right" class="glass" hidden>
+    <div class="rh"><span>แหล่งอ้างอิง</span><button id="rClose" class="btn xs" type="button" aria-label="ซ่อนแถบแหล่งอ้างอิง">ซ่อน</button></div>
+    <div id="cards" aria-label="ข้อมูลที่เกี่ยวข้อง"></div>
+  </aside>
+</main>
 <div id="hud" data-s="idle" title="ลากเพื่อย้าย · ลากมุมขวาล่างเพื่อย่อขยาย · ดับเบิลคลิกเพื่อคืนที่เดิม">
 <svg viewBox="-100 -100 200 200" fill="none" stroke="currentColor" aria-hidden="true">
 <g id="r1"><circle r="97" stroke-width="5" stroke-dasharray="0.8 4.28" opacity=".45"/><circle r="96" stroke-width="9" stroke-dasharray="1 24.13" opacity=".9"/></g>
@@ -217,10 +316,6 @@ body.panel #user{font-size:15px}
 </svg>
 <div id="pill" role="status" aria-live="polite">พร้อมคุย</div><i class="grip" aria-hidden="true"></i>
 </div>
-<section id="panel" class="glass" aria-label="ข้อมูล"><div class="ph"><button id="pback" class="btn" type="button" hidden>‹ ย้อนกลับ</button><h2 id="ptitle">ข้อมูล</h2></div><div id="pbody" class="md"></div></section>
-<div id="cards" aria-label="ข้อมูลที่เกี่ยวข้อง"></div>
-<div id="subs" aria-live="polite"><div id="user"></div><div id="bot"></div></div>
-<form id="chat" class="glass" autocomplete="off"><input id="chatIn" maxlength="500" placeholder="พิมพ์ถามแทนการพูด แล้วกด Enter" aria-label="พิมพ์ข้อความถึงผู้ช่วย"><button class="btn primary" type="submit">ส่ง</button></form>
 <audio id="remote" autoplay hidden></audio>
 
 <script type="module">
@@ -235,16 +330,92 @@ const SRC = { web: ["เว็บ", 0x60a5fa], docs: ["เอกสารใน�
 const OTHER_COLOR = 0x9ca3af; // any source string not in SRC
 
 let state = "idle", statusText = "", userLevel = 0, botLevel = 0, panelText = "", panelBlocks = 0;
-const ui = { call: $("callBtn"), mic: $("micBtn"), pill: $("pill"), user: $("user"), bot: $("bot"), cards: $("cards"), list: $("trlist"), note: $("note") };
+let savedPanels = [], viewingSaved = -1, totalCards = 0, userClosedRight = false;
+const ui = { call: $("callBtn"), mic: $("micBtn"), pill: $("pill"), topState: $("topState"), user: $("user"), bot: $("bot"), cards: $("cards"), list: $("trlist"), note: $("note") };
 
 /* ---------- UI state ---------- */
-function render() { ui.pill.textContent = statusText || LABEL[state]; }
+function render() {
+  const txt = statusText || LABEL[state];
+  ui.pill.textContent = txt;
+  ui.topState.textContent = txt;
+  ui.topState.dataset.s = state;
+}
 function setState(s) {
   if (s !== state) pulse = Math.max(pulse, 0.6); // every state change rings out from the HUD
   state = s; render(); hud.dataset.s = s;
   if (team.boss) { team.boss.st.textContent = BOSS[s]; team.boss.li.className = "boss" + (s === "idle" ? "" : " run"); }
 }
 function notice(msg) { ui.note.textContent = msg; }
+
+/* ---------- workspace layout, subtitle toggle, zoom, copy ---------- */
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, String(v)); } catch {} };
+
+let showLeft = lsGet("ui.left") !== "0", showRight = false, showSubs = lsGet("ui.subs") !== "0", prevMax = null;
+function applyLayout() {
+  $("left").hidden = !showLeft;
+  $("right").hidden = !showRight;
+  $("togLeft").setAttribute("aria-pressed", String(showLeft));
+  $("togRight").setAttribute("aria-pressed", String(showRight));
+  $("togMax").setAttribute("aria-pressed", String(!showLeft && !showRight));
+  document.body.classList.toggle("noleft", !showLeft);
+  document.body.classList.toggle("nosubs", !showSubs);
+  $("subBtn").setAttribute("aria-pressed", String(showSubs));
+}
+$("togLeft").onclick = () => { showLeft = !showLeft; prevMax = null; lsSet("ui.left", showLeft ? "1" : "0"); applyLayout(); };
+$("togRight").onclick = () => { showRight = !showRight; userClosedRight = !showRight; prevMax = null; applyLayout(); };
+$("rClose").onclick = () => { showRight = false; userClosedRight = true; prevMax = null; applyLayout(); };
+$("togMax").onclick = () => {
+  if (showLeft || showRight) { prevMax = [showLeft, showRight]; showLeft = false; showRight = false; }
+  else { [showLeft, showRight] = prevMax || [true, totalCards > 0]; prevMax = null; }
+  lsSet("ui.left", showLeft ? "1" : "0");
+  applyLayout();
+};
+$("subBtn").onclick = () => { showSubs = !showSubs; lsSet("ui.subs", showSubs ? "1" : "0"); applyLayout(); };
+for (const b of document.querySelectorAll("#mtabs [data-tab]")) {
+  b.onclick = () => {
+    document.body.dataset.mtab = b.dataset.tab;
+    for (const x of document.querySelectorAll("#mtabs [data-tab]")) x.setAttribute("aria-pressed", String(x === b));
+  };
+}
+applyLayout();
+
+// ลุงจืด 2026-11-13 "เพิ่มปุ่ม zoom + - ขนาดตัวอักษร": 80%..200% in 10% steps, kept in localStorage
+const ZMIN = 80, ZMAX = 200, ZSTEP = 10;
+let zoomPct = 100;
+function setZoom(p) {
+  zoomPct = Math.max(ZMIN, Math.min(ZMAX, Math.round(p / ZSTEP) * ZSTEP));
+  document.documentElement.style.setProperty("--zoom", (zoomPct / 100).toFixed(2));
+  $("zPct").textContent = zoomPct + "%";
+  $("zOut").disabled = zoomPct <= ZMIN;
+  $("zIn").disabled = zoomPct >= ZMAX;
+  lsSet("zoom", zoomPct);
+}
+const zInit = +lsGet("zoom");
+setZoom(zInit >= ZMIN && zInit <= ZMAX ? zInit : 100);
+$("zOut").onclick = () => setZoom(zoomPct - ZSTEP);
+$("zIn").onclick = () => setZoom(zoomPct + ZSTEP);
+$("zPct").onclick = () => setZoom(100);
+
+function copyText(text, btn) {
+  const done = () => {
+    const old = btn.textContent;
+    btn.textContent = "คัดลอกแล้ว ✓";
+    setTimeout(() => { if (btn.textContent === "คัดลอกแล้ว ✓") btn.textContent = old; }, 1400);
+  };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  else fallbackCopy(text, done);
+}
+function fallbackCopy(text, done) {
+  const ta = el("textarea"); ta.value = text; ta.style.cssText = "position:fixed;opacity:0";
+  document.body.append(ta); ta.select();
+  try { if (document.execCommand("copy")) done(); } catch {}
+  ta.remove();
+}
+$("copyBtn").onclick = () => {
+  const txt = nav.length ? $("pbody").innerText : (viewingSaved >= 0 ? savedPanels[viewingSaved]?.text : panelText) || $("pbody").innerText;
+  if (txt) copyText(txt, $("copyBtn"));
+};
 
 let botLi = null;
 function onEvent(ev) {
@@ -292,7 +463,10 @@ function teamRow(key) {
   row.append(el("span", "dot"), el("span", "nm", boss ? "หัวหน้า" : "ลูกทีม" + (Object.hasOwn(SRC, key) ? SRC[key][0] : key)), st);
   li.append(row, tk); $("teamlist").append(li);
   li.tabIndex = 0; li.setAttribute("role", "button"); li.onkeydown = (e) => e.key === "Enter" && li.click();
-  li.onclick = () => boss ? (nav.length = 0, drawPanel()) : showFinds(key); // the boss row goes back to the answer
+  li.onclick = () => {
+    boss ? (nav.length = 0, drawPanel()) : showFinds(key);
+    if (matchMedia("(max-width:900px)").matches) document.querySelector('#mtabs [data-tab="panel"]').click();
+  };
   return (team.rows[key] = { li, st, tk, run: new Set(), t0: 0 });
 }
 function initTeam() {
@@ -317,10 +491,10 @@ function onTeam({ id, state: st, worker, task, secs }) {
   if (!r.run.size) { r.li.className = st; r.st.textContent = (st === "done" ? "เสร็จ ✓ " : "ไม่ได้ข้อมูล ") + secs + " วิ"; }
   teamCount();
 }
-function teamCount() { // ลุงจืด 2026-11-04 "บอกจำนวนลูกทีมด้วย": each job is one worker
+function teamCount() { // ลุงจืด 2026-11-04..14: live Auto Swarm worker count
   const busy = Object.values(team.rows).reduce((n, r) => n + (r === team.boss ? 0 : r.run.size), 0), turn = Object.keys(team.jobs).length;
-  $("teamsum").textContent = busy ? `ทีมงาน · ลูกทีม ${busy} คนกำลังช่วย` : turn ? `ทีมงาน · รอบนี้ลูกทีมช่วย ${turn} คน`
-    : `ทีมงาน · ลูกทีม ${Object.keys(team.rows).length - 1} ฝ่าย`;
+  $("teamsum").textContent = busy ? `ทีมงานอัตโนมัติ · กำลังช่วยค้น ${busy} คน` : turn ? `ทีมงานอัตโนมัติ · รอบนี้ช่วย ${turn} งาน`
+    : `ทีมงานอัตโนมัติ · พร้อมช่วย ${Object.keys(team.rows).length - 1} ฝ่าย`;
 }
 function showFinds(key) { // the cards one worker brought back this turn, each opens further
   const found = Object.keys(team.jobs).filter((j) => team.jobs[j] === key).flatMap((j) => team.found[j] || []);
@@ -341,12 +515,20 @@ function safeUrl(u) {
 }
 let turnText = "", turnBox = null; // the question and its card group
 function makeCard({ source, title, snippet, url, slug }) { // web: the page itself; BC note: in full; else its text in the panel
-  const href = source === "web" && url ? safeUrl(url) : null, c = el("a", "card glass");
+  const href = source === "web" && url ? safeUrl(url) : null, c = el("a", "card");
   if (href) { c.href = href; c.target = "_blank"; c.rel = "noopener noreferrer"; }
-  else { c.href = "#"; c.onclick = (e) => { e.preventDefault(); slug ? openNote(slug, title) : openView(title || "ข้อมูล", [el("p", "", snippet || "")]); }; }
+  else {
+    c.href = "#";
+    c.onclick = (e) => {
+      e.preventDefault();
+      slug ? openNote(slug, title) : openView(title || "ข้อมูล", [el("p", "", snippet || "")]);
+      if (matchMedia("(max-width:900px)").matches) document.querySelector('#mtabs [data-tab="panel"]').click();
+    };
+  }
   if (slug) c.dataset.slug = slug;
-  const known = Object.hasOwn(SRC, source);
-  c.append(el("span", "badge " + (known ? source : "other"), known ? SRC[source][0] : String(source)), el("h3", "", title || ""), el("p", "", snippet || ""));
+  const known = Object.hasOwn(SRC, source), ch = el("div", "ch");
+  ch.append(el("span", "badge " + (known ? source : "other"), known ? SRC[source][0] : String(source)), el("h3", "", title || ""));
+  c.append(ch, el("p", "", snippet || ""));
   return c;
 }
 function addCard(card) {
@@ -355,21 +537,25 @@ function addCard(card) {
     turnBox = el("section", "turn"); turnBox.append(el("h4", "", turnText || "ผู้ช่วยเริ่มคุย")); ui.cards.prepend(turnBox);
     while (ui.cards.children.length > 50) ui.cards.lastChild.remove();
   }
-  if (!card.slug || !turnBox.querySelector(`[data-slug="${CSS.escape(card.slug)}"]`)) turnBox.append(makeCard(card)); // a note read after its search hit: one card
+  if (!card.slug || !turnBox.querySelector(`[data-slug="${CSS.escape(card.slug)}"]`)) {
+    turnBox.append(makeCard(card)); // a note read after its search hit: one card
+    totalCards++;
+    for (const id of ["cardCnt", "mCardCnt"]) { $(id).textContent = totalCards; $(id).hidden = false; }
+    if (!showRight && !userClosedRight && prevMax === null) { showRight = true; applyLayout(); }
+  }
 }
 
 /* ---------- HUD ring ---------- */
 const hud = $("hud");
+try { localStorage.removeItem("hud"); } catch {} // clear legacy saved size/spot so every fresh open starts at bottom-left
+let customHud = null;
 function placeHud(p) { // clamped to the screen, below the top bar
-  const s = Math.max(72, Math.min(p.s, 480, innerWidth, innerHeight - 64));
-  const x = Math.max(0, Math.min(p.x, innerWidth - s)), y = Math.max(64, Math.min(p.y, innerHeight - s));
-  Object.assign(hud.style, { left: x + "px", top: y + "px", width: s + "px" });
+  const s = Math.max(64, Math.min(p.s, 480, innerWidth, innerHeight - 48));
+  const x = Math.max(0, Math.min(p.x, innerWidth - s)), y = Math.max(46, Math.min(p.y, innerHeight - s));
+  Object.assign(hud.style, { left: x + "px", top: y + "px", bottom: "auto", width: s + "px" });
   return { x, y, s };
 }
-// a sum of three numbers is finite, anything else stored there is not
-const savedHud = () => { try { const p = JSON.parse(localStorage.getItem("hud")); return Number.isFinite(p?.x + p?.y + p?.s) ? p : null; } catch { return null; } };
-const fitHud = () => { const p = savedHud(); if (p) placeHud(p); }; // none saved: the CSS spot
-fitHud(); addEventListener("resize", fitHud);
+addEventListener("resize", () => { if (customHud) customHud = placeHud(customHud); });
 hud.onpointerdown = (e) => {
   if (e.button) return;
   const r = hud.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY, grip = e.target.classList.contains("grip");
@@ -381,10 +567,10 @@ hud.onpointerdown = (e) => {
   };
   hud.onpointerup = hud.onpointercancel = () => {
     hud.onpointermove = null; hud.classList.remove("drag");
-    if (at) try { localStorage.setItem("hud", JSON.stringify(at)); } catch {} // private mode: it stays put until reload
+    if (at) customHud = at;
   };
 };
-hud.ondblclick = () => { try { localStorage.removeItem("hud"); } catch {} hud.removeAttribute("style"); };
+hud.ondblclick = () => { customHud = null; hud.removeAttribute("style"); };
 
 const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const rings = ["r1", "r2", "r3"].map((id) => $(id)), core = $("core"), ping = $("ping");
@@ -586,7 +772,7 @@ async function start() {
     es = new EventSource(`/outputs?webrtc_id=${webrtcId}`);
     es.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch { /* ignore bad event */ } };
     setState("listening");
-    ui.call.textContent = "วางสาย"; ui.call.className = "btn danger"; ui.call.disabled = false;
+    ui.call.textContent = "วางสาย"; ui.call.className = "btn sm danger"; ui.call.disabled = false;
   } catch (e) {
     notice(e.name === "say" ? e.message : `เริ่มคุยไม่ได้ ลองใหม่อีกครั้ง (${e.name || "error"})`);
     hangup();
@@ -600,14 +786,15 @@ function hangup() {
   demoTimers.forEach(clearTimeout); demoTimers = [];
   userMeter = botMeter = null; userLevel = botLevel = 0; botLi = null; statusText = "";
   $("remote").srcObject = null; setMic(true); ui.mic.disabled = true;
-  archivePanel(); hidePanel(); ui.user.textContent = ""; ui.bot.textContent = ""; // cards stay: scroll back after the call
+  archivePanel(); hidePanel(); ui.user.textContent = ""; ui.bot.textContent = ""; // cards & history stay: review after the call
   sats.splice(0).forEach((s) => s.c.remove());
-  ui.call.textContent = "เริ่มคุย"; ui.call.className = "btn primary"; ui.call.disabled = false;
+  ui.call.textContent = "เริ่มคุย"; ui.call.className = "btn sm primary"; ui.call.disabled = false;
   setState("idle");
 }
 
 /* ---------- info panel: safe markdown subset -> DOM (textContent only, never innerHTML) ---------- */
-const LIST = /^\s*(?:[-*]|\d+\.)\s+(.*)$/, TABLE_SEP = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/, ROW = /^\s*\|/;
+const LIST = /^(\s*)([-*]|\d+\.)\s+(.*)$/, TABLE_SEP = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/, ROW = /^\s*\|/;
+const NUM_COL = /^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?$/;
 const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
 function inline(parent, text) {
   for (const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)\s]+\))/)) {
@@ -620,7 +807,7 @@ function inline(parent, text) {
     else if (part) parent.append(part); // plain text node; unknown syntax stays literal
   }
 }
-const FENCE = /^\s*```/; // ```sql … ```: a query keeps its lines and spaces (log 2026-11-08 06:33 asked for one)
+const FENCE = /^\s*```/, QUOTE = /^\s*>\s?(.*)$/, CARDS = /^\s*\[การ์ด\]\s*(.+)$/;
 const FLOW = /^\s*\[ขั้นตอน\]\s*(.*)$/, MAP = /^\s*\[แผนที่\]\s*(.+?)\s*(?:@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?))?\s*$/;
 function mapFigure(place, lat, lon) { // the server found "@lat,lon" for the place (OpenStreetMap Nominatim)
   if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) return el("p", "", "ตำแหน่ง: " + place);
@@ -638,30 +825,75 @@ function mdBlocks(text) { // each block keeps its source lines (dataset.src) so 
     if (!l.trim()) { i++; }
     else if (FENCE.test(l)) { // an open fence still streaming runs to the end of the text
       const code = []; for (i++; i < lines.length && !FENCE.test(lines[i]); i++) code.push(lines[i]);
-      const pre = el("pre"), c = el("code"); c.textContent = code.join("\n"); pre.append(c); out.push(pre); i++;
+      const raw = code.join("\n"), box = el("div", "codebox"), cp = el("button", "btn xs cpcode", "คัดลอก"), pre = el("pre"), c = el("code");
+      cp.type = "button"; cp.onclick = () => copyText(raw, cp);
+      c.textContent = raw; pre.append(c); box.append(cp, pre); out.push(box); i++;
+    }
+    else if (CARDS.test(l)) { // "[การ์ด] หัวข้อ: ค่า | หัวข้อ: ค่า": contextual summary/comparison cards
+      const grid = el("div", "kpis");
+      for (; i < lines.length && CARDS.test(lines[i]); i++) {
+        for (const item of lines[i].match(CARDS)[1].split(/\s*\|\s*/).filter(Boolean)) {
+          const kv = item.match(/^([^:：]{1,60})[:：]\s*(.+)$/), card = el("div", "kpi"), v = el("strong", "kv");
+          if (kv) { const k = el("span", "kl"); inline(k, kv[1].trim()); inline(v, kv[2].trim()); card.append(k, v); }
+          else { inline(v, item.trim()); card.append(v); }
+          grid.append(card);
+        }
+      }
+      if (grid.childElementCount) out.push(grid);
+    }
+    else if (QUOTE.test(l)) { // "> ..." scenario / case box
+      const q = el("blockquote", "casebox");
+      for (; i < lines.length && QUOTE.test(lines[i]); i++) {
+        const t = lines[i].match(QUOTE)[1].trim();
+        if (t) { const p = el("p"); inline(p, t); q.append(p); }
+      }
+      if (q.childElementCount) out.push(q);
     }
     else if (fl) { // "[ขั้นตอน] a → b → c", or the mark alone over a numbered list (what DeepSeek writes)
       const steps = fl[1].split(/\s*(?:→|->)\s*/).filter(Boolean), f = el("ol", steps.length ? "flow" : "flow col");
-      if (!steps.length) for (; lines[i + 1] !== undefined && LIST.test(lines[i + 1]); i++) steps.push(lines[i + 1].match(LIST)[1]);
+      if (!steps.length) for (; lines[i + 1] !== undefined && LIST.test(lines[i + 1]); i++) steps.push(lines[i + 1].match(LIST)[3]);
       steps.forEach((s, k) => { const li = el("li"); li.style.setProperty("--i", k); inline(li, s); f.append(li); });
       f.style.setProperty("--n", steps.length); out.push(f); i++;
     } else if (mp) { out.push(mp[2] ? mapFigure(mp[1], +mp[2], +mp[3]) : el("p", "", "ตำแหน่ง: " + mp[1])); i++; }
     else if (h) { const e = el("h" + (h[1].length + 2)); inline(e, h[2]); out.push(e); i++; }
     else if (l.includes("|") && TABLE_SEP.test(lines[i + 1] || "") || ROW.test(l) && (TABLE_SEP.test(l) || ROW.test(lines[i + 1] || ""))) {
-      const t = el("table"), head = el("thead"), body = el("tbody"), hr = el("tr");
+      const t = el("table"), head = el("thead"), body = el("tbody"), hr = el("tr"), rowCells = [];
       if (TABLE_SEP.test(lines[i + 1] || "")) { for (const c of cells(l)) { const x = el("th"); inline(x, c); hr.append(x); } head.append(hr); i += 2; }
       for (; i < lines.length && lines[i].includes("|"); i++) {
         if (TABLE_SEP.test(lines[i])) continue; // the |---| row of a table that lost its head row
-        const r = el("tr"); for (const c of cells(lines[i])) { const x = el("td"); inline(x, c); r.append(x); } body.append(r);
+        const r = el("tr"), cs = cells(lines[i]); rowCells.push(cs);
+        for (const c of cs) { const x = el("td"); inline(x, c); r.append(x); } body.append(r);
+      }
+      if (rowCells.length) {
+        const cols = Math.max(...rowCells.map((r) => r.length));
+        for (let j = 1; j < cols; j++) {
+          const vals = rowCells.map((r) => (r[j] ?? "").trim()).filter((v) => v && v !== "—" && v !== "-");
+          if (vals.length && vals.every((v) => NUM_COL.test(v))) {
+            hr.children[j]?.classList.add("num");
+            for (const tr of body.children) tr.children[j]?.classList.add("num");
+          }
+        }
       }
       t.append(head, body); const w = el("div", "tw"); w.append(t); out.push(w);
     } else if (LIST.test(l)) {
-      const e = el(/^\s*\d+\./.test(l) ? "ol" : "ul");
-      for (; i < lines.length && LIST.test(lines[i]); i++) { const li = el("li"); inline(li, lines[i].match(LIST)[1]); e.append(li); }
-      out.push(e);
+      const root = el(/^\s*\d+\./.test(l) ? "ol" : "ul"), stack = [{ indent: l.match(LIST)[1].replace(/\t/g, "  ").length, list: root }];
+      let nested = false;
+      for (; i < lines.length && LIST.test(lines[i]); i++) {
+        const [, ws, mark, body] = lines[i].match(LIST), ind = ws.replace(/\t/g, "  ").length;
+        while (stack.length > 1 && ind <= stack.at(-1).indent - 2) stack.pop();
+        if (ind >= stack.at(-1).indent + 2 && stack.at(-1).list.lastElementChild) {
+          const sub = el(/^\d+\./.test(mark) ? "ol" : "ul");
+          stack.at(-1).list.lastElementChild.append(sub);
+          stack.push({ indent: ind, list: sub });
+          nested = true;
+        }
+        const li = el("li"); inline(li, body); stack.at(-1).list.append(li);
+      }
+      if (nested) root.classList.add("tree");
+      out.push(root);
     } else {
       const p = el("p"), buf = [];
-      while (i < lines.length && lines[i].trim() && !/^#{1,3}\s/.test(lines[i]) && !LIST.test(lines[i]) && !FLOW.test(lines[i]) && !MAP.test(lines[i]) && !FENCE.test(lines[i]) && (i === start || !ROW.test(lines[i]))) buf.push(lines[i++]);
+      while (i < lines.length && lines[i].trim() && !/^#{1,3}\s/.test(lines[i]) && !LIST.test(lines[i]) && !FLOW.test(lines[i]) && !MAP.test(lines[i]) && !FENCE.test(lines[i]) && !CARDS.test(lines[i]) && !QUOTE.test(lines[i]) && (i === start || !ROW.test(lines[i]))) buf.push(lines[i++]);
       inline(p, buf.join(" ")); out.push(p);
     }
     if (out.length > n) out.at(-1).dataset.src = lines.slice(start, i).join("\n");
@@ -684,7 +916,7 @@ function countUp(td, delay) { // a number cell runs up to its value and ends on 
 function rowsIn(block) { // the table rows not on screen yet slide in, one after another
   [...block.querySelectorAll("tbody tr:not(.seen)")].forEach((r, n) => {
     r.classList.add("in"); r.style.setProperty("--r", n);
-    r.querySelectorAll("td").forEach((td) => countUp(td, n * 140 + 150));
+    r.querySelectorAll("td").forEach((td) => countUp(td, n * 110 + 120));
   });
 }
 function renderMd(box, text, animateFrom = Infinity) { // blocks that did not change stay put: a map replaced would reload
@@ -704,13 +936,36 @@ function renderMd(box, text, animateFrom = Infinity) { // blocks that did not ch
   });
   return blocks.length;
 }
-/* drill-down (ลุงจืด 2026-11-04 "กดดูได้ต่อเนื่อง"): views stacked over the answer, the back button pops one */
+/* drill-down (ลุงจืด 2026-11-04 "กดดูได้ต่อเนื่อง") + turn answer history bar */
 const nav = [], notes = new Map(); // nav: {title, nodes}; notes: slug -> text, fetched once per page
+function renderPhist() {
+  const bar = $("phist");
+  if (!savedPanels.length) { bar.hidden = true; bar.replaceChildren(); return; }
+  bar.hidden = false;
+  const chips = [(() => {
+    const b = el("button", "btn xs hchip", "ล่าสุด"); b.type = "button";
+    b.setAttribute("aria-pressed", String(viewingSaved === -1));
+    b.onclick = () => { viewingSaved = -1; nav.length = 0; drawPanel(); };
+    return b;
+  })()];
+  savedPanels.forEach((item, idx) => {
+    const b = el("button", "btn xs hchip", `${idx + 1}. ${item.label}`); b.type = "button"; b.title = item.label;
+    b.setAttribute("aria-pressed", String(viewingSaved === idx));
+    b.onclick = () => { viewingSaved = idx; nav.length = 0; drawPanel(); };
+    chips.push(b);
+  });
+  bar.replaceChildren(...chips);
+}
 function openView(title, nodes) { nav.push({ title, nodes }); drawPanel(); return nav.at(-1); }
-function drawPanel() { // the top view, or the answer when none is open
-  const v = nav.at(-1), box = $("pbody");
-  $("ptitle").textContent = v ? v.title : "ข้อมูล"; $("pback").hidden = !v;
-  if (v) box.replaceChildren(...v.nodes); else panelBlocks = renderMd(box, panelText);
+function drawPanel() { // the top view, saved turn answer, or the live answer
+  const v = nav.at(-1), box = $("pbody"), activeMd = viewingSaved >= 0 ? savedPanels[viewingSaved].text : panelText;
+  $("ptitle").textContent = v ? v.title : (viewingSaved >= 0 ? `ย้อนหลัง · ${savedPanels[viewingSaved].label}` : "ข้อมูล");
+  $("pback").hidden = !v;
+  $("copyBtn").hidden = !v && !activeMd;
+  if (v) box.replaceChildren(...v.nodes);
+  else if (viewingSaved >= 0) renderMd(box, activeMd);
+  else panelBlocks = renderMd(box, panelText);
+  renderPhist();
   box.scrollTop = 0;
 }
 $("pback").onclick = () => { nav.pop(); drawPanel(); };
@@ -724,30 +979,41 @@ async function openNote(slug, title) {
   } catch { v.nodes = [el("p", "", "เปิดข้อมูลนี้ไม่สำเร็จ ลองกดใหม่อีกครั้ง")]; }
   if (nav.at(-1) === v) drawPanel();
 }
-function showPanel(text) { // each panel event replaces the whole answer; a view the caller opened stays on top
-  panelText = text;
+function showPanel(text) { // each panel event replaces the live answer; switch back from saved turn if needed
+  panelText = text; viewingSaved = -1;
+  $("copyBtn").hidden = !text;
   if (nav.length) return;
   const box = $("pbody"), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
   panelBlocks = renderMd(box, text, panelBlocks);
   if (stick) box.scrollTop = box.scrollHeight;
 }
 function hidePanel() {
-  panelText = ""; nav.length = 0; drawPanel();
+  panelText = ""; viewingSaved = -1; nav.length = 0; drawPanel();
 }
-function archivePanel() { // keep the last panel in the transcript as a collapsed item
+function archivePanel() { // save full turn output for 1-click recall in #phist and #trlist
   if (!panelText) return;
-  const li = el("li"), d = el("details"), b = el("div", "md");
-  renderMd(b, panelText); d.append(el("summary", "", "รายละเอียด"), b); li.append(d); ui.list.append(li);
+  const heading = panelText.match(/^#{1,3}\s+(.+)/m)?.[1] || turnText || "รายละเอียด";
+  const label = heading.replace(/[*`]/g, "").trim().slice(0, 26);
+  const idx = savedPanels.length;
+  savedPanels.push({ label, text: panelText });
+  renderPhist();
+  const li = el("li", "arc"), btn = el("button", "trview", `เปิดดู: ${label} ›`);
+  btn.type = "button";
+  btn.onclick = () => {
+    viewingSaved = idx; nav.length = 0; drawPanel();
+    if (matchMedia("(max-width:900px)").matches) document.querySelector('#mtabs [data-tab="panel"]').click();
+  };
+  li.append(btn); ui.list.append(li);
 }
 
 /* ---------- demo mode (?demo=1): scripted events, no backend ---------- */
 const DEMO_MD = ["## สรุปราคาทองวันนี้", "ข้อมูลล่าสุดจากแหล่งที่ค้นพบ", "", "- ทองคำแท่งรับซื้อ **40,000** บาท", "- ทองคำแท่งขายออก **40,200** บาท",
-  "- ทองรูปพรรณขายออก `41,000` บาท", "", "| ประเภท | รับซื้อ | ขายออก |", "|---|---|---|", "| ทองคำแท่ง | 40,000 | 40,200 |", "| ทองรูปพรรณ | 39,300 | 41,000 |", "",
+  "- ทองรูปพรรณขายออก `41,000` บาท", "", "| ประเภท | รับซื้อ (บาท) | ขายออก (บาท) |", "|---|---|---|", "| ทองคำแท่ง | 40,000 | 40,200 |", "| ทองรูปพรรณ | 39,300 | 41,000 |", "",
   "", "[ขั้นตอน] เช็กราคาประกาศ → เลือกร้าน → ซื้อพร้อมใบรับประกัน", "", "[ขั้นตอน]", "1. เปิดดูราคาประกาศล่าสุดของสมาคมค้าทองคำ", "2. เลือกร้านที่มีป้ายทองมาตรฐาน", "3. นำบัตรประชาชนไปด้วยเมื่อซื้อทองแท่ง", "4. รับใบรับประกันและเก็บไว้ใช้ตอนขายคืน", "",
   "[แผนที่] เยาวราช กรุงเทพมหานคร @13.74191,100.50895", "",
   "อ้างอิง: [สมาคมค้าทองคำ](https://example.com/gold)"];
 function runDemo() {
-  hangup(); ui.call.textContent = "วางสาย"; ui.call.className = "btn danger";
+  hangup(); ui.call.textContent = "วางสาย"; ui.call.className = "btn sm danger";
   const t0 = performance.now();
   const script = [
     [300, () => onLog("started_talking")],

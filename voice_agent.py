@@ -79,6 +79,12 @@ EXAMPLE_ASK = re.compile(r"ตัวอย่าง|สมมติ|ตารา
 # log 2026-11-09: a plain "50 หาร 0.5 บวก 50" got no calc and ended on CUT_ALL. Checked on masked() words, so a
 # phone's dashes are no sum. ponytail: "ลบ 3 รายการ" or a date 10/11 costs one wasted calc round
 SUM_ASK = re.compile(r"\d\s*(?:บวก|ลบ|คูณ|หาร)|(?:บวก|ลบ|คูณ|หาร)\s*\d|\d\s*[-+*/x×]\s*\d")
+# topics whose worked example genuinely computes numbers (costing, tax, offset, discount); non-math topics (warehouse/location,
+# menu workflow, SQL) skip forced round-0 calc (~1.2 s faster) and pick tree/flow/case/SQL examples instead of fake sums
+CALC_ASK = re.compile(r"คำนวณ|ต้นทุน|ถัวเฉลี่ย|เฉลี่ย|ไฟโฟ|fifo|(?<!ใบกำกับ)ภาษี|vat|หัก\s*ณ|ส่วนลด|ดอกเบี้ย|ค่าเสื่อม|กำไร|ขาดทุน|"
+                      r"ยอดรวม|หักกลบ|มัดจำ|งวด|ผ่อน|ปันส่วน|ราคาขาย|เดบิต|เครดิต", re.I)
+FAST_CHAT = re.compile(r"^(?:สวัสดี|หวัดดี|ฮัลโหล|ขอบคุณ(?:มาก)?|ขอคิดดูก่อน|คิดดูก่อน|แค่นี้ก่อน|วางสายก่อน)"
+                       r"(?:\s*(?:ครับ|ค่ะ|นะคะ|นะครับ|นะ))*[\s.!?…]*$")
 LATEST_ASK = re.compile(r"ข่าว|ล่าสุด|ทอง|น้ำมัน|หุ้น|ค่าเงิน|อัตราแลกเปลี่ยน|ดอลลาร์|บิตคอยน์|คริปโต|อากาศ|ฝนตก|พยากรณ์|"
                         r"ผลบอล|ฟุตบอล|หวย|สลากกินแบ่ง|ราคา.{0,8}วันนี้|วันนี้.{0,8}ราคา")
 CONFIRM = re.compile(r"ยืนยัน|กดเลย|ทำเลย|เปิดเลย|ตกลง|ได้เลย|โอเค|ใช่")  # the caller's yes to a held computer action
@@ -299,7 +305,7 @@ def calc(lines):
     numbers and labels here are this turn's sources. ponytail: a label's words become sources too, so the boss
     could pass a claim through one; one sum per line, an earlier line's result is written out, not named."""
     out = []
-    for line in str(lines).splitlines()[:20]:
+    for line in str(lines).splitlines()[:120]:
         label, _, expr = line.rpartition(":")
         src = expr.replace(",", "").replace("×", "*").replace("÷", "/").strip()[:200]
         if not src:
@@ -385,16 +391,15 @@ TOOL_SPECS = [
     tool_spec("search_docs", "ค้นเอกสารและไฟล์ของผู้ใช้ในเครื่อง", one_arg("query", "คำสำคัญสั้นๆ คั่นด้วยเว้นวรรค เช่น ร้าน เวลาเปิด")),
     tool_spec("calc", "เครื่องคิดเลข คิดตัวเลขที่ต้องคำนวณก่อนพูดทุกครั้ง เช่น ตัวอย่างที่ผู้ฟังขอ ต้นทุนถัวเฉลี่ย VAT ยอดรวม",
               one_arg("lines", "บรรทัดละหนึ่งสูตร เขียนว่า สิ่งที่คิดพร้อมหน่วย: สูตร ใช้ได้แค่ตัวเลข + - * / และวงเล็บ "
-                      "เช่น รับเข้า 10 ชิ้น ชิ้นละ 50 บาท: 10*50 ตัวเลขทุกช่องของตารางรวมยอดสะสมต้องมีบรรทัดของมัน "
+                      "เช่น รับเข้า 10 ชิ้น ชิ้นละ 50 บาท: 10*50 ตัวเลขทุกช่องของตารางรวมถึงยอดคงเหลือและแถวรวมสุดท้ายต้องมีบรรทัดของมัน "
                       "รหัสสมมติ เช่น LOT A001 ให้อยู่ในชื่อบรรทัด")),
     tool_spec("general_knowledge", "ถามความรู้ทั่วไปที่ไม่ใช่เรื่องโปรแกรม BC ราคา หรือของบริษัท ใช้เมื่อคลังความรู้และเว็บไม่มีคำตอบเท่านั้น",
               one_arg("question", "คำถามเต็มประโยค")),
 ]
 STATUS = {"web_search": "กำลังค้นหาในอินเทอร์เน็ต", "search_docs": "กำลังค้นเอกสารในเครื่อง",
           "calc": "กำลังคำนวณ", "general_knowledge": "กำลังถามความรู้ทั่วไป"}
-FILLER_TEXT = {"web_search": "ขอค้นข้อมูลสักครู่นะครับ", "search_docs": "ขอเปิดดูเอกสารสักครู่นะครับ",
-               "": "ขอตรวจสอบข้อมูลสักครู่นะครับ", "hello": "สวัสดีครับ"}  # hello: no tool has that name
-FILLERS = {}  # pre-rendered at warm-up so the filler and the hello play instantly
+FILLER_TEXT = {"hello": "สวัสดีครับ"}  # pre-rendered greeting played as soon as a call connects
+FILLERS = {}  # pre-rendered at warm-up so the hello plays instantly
 
 
 # ---------------------------------------------------------------- a customer's message for the owner
@@ -724,21 +729,30 @@ def geocode(place):
 # SQL words a query may use that no note spells out; any other name in a code line must be in the sources
 CODE_WORDS = set("select from where and or not in is null as on join left right inner outer full cross group by order "
                  "having sum count min max avg round abs coalesce nullif case when then else end between like ilike "
-                 "distinct limit offset union all with asc desc cast numeric integer text varchar date now interval "
-                 "true false exists any lower upper trim extract over partition row_number using values".split())
+                 "distinct limit offset union all with asc desc cast numeric decimal integer int bigint smallint text "
+                 "varchar char boolean date timestamp timestamptz now current_date current_timestamp interval filter "
+                 "true false exists any lower upper trim extract over partition row_number rank dense_rank lag lead "
+                 "greatest least concat replace substring split_part to_char to_date date_trunc string_agg array_agg "
+                 "json jsonb jsonb_agg unnest generate_series lateral using values".split())
+SQL_TYPES = re.compile(r"(?i)\b(?:numeric|decimal|varchar|char|character\s+varying|timestamp\w*)\s*\(\s*\d+(?:\s*,\s*\d+)?\s*\)")
+SQL_OWN = re.compile(r"(?i)(?:\bas\s+([A-Za-z_]\w*)|\bwith\s+([A-Za-z_]\w*)\s+as\b|,\s*([A-Za-z_]\w*)\s+as\s*\()")
 
 
-def code_unsourced(line, known, sources):
-    """What a code line makes up: a table, column or number no source has. A name after AS is the query's own;
-    names and commas go before the numbers are read (eval 2026-11-08 read "qty_2,0" as 20), and a source range
-    "54-73" covers the flags between. ponytail: a word list and a substring test, 1-2 letter aliases pass,
-    an alias used on a later line is cut; a SQL parser if real queries trip it"""
-    low, own = sources.lower(), set(re.findall(r"(?i)\bas\s+([A-Za-z_]\w*)", line))
+def code_unsourced(line, known, sources, own_names=None):
+    """What a code line makes up: a table, column or number no source has. CTE/column aliases declared with AS
+    carry across the code block (`own_names`), SQL type precisions like numeric(18,2) are stripped before number
+    checking, and a source range "54-73" covers the flags between."""
+    low = sources.lower()
+    declared = {w.lower() for g in SQL_OWN.findall(line) for w in g if w} - CODE_WORDS
+    if own_names is not None:
+        own_names |= declared
+    allowed = own_names if own_names is not None else declared
     names = {w for w in re.findall(r"[A-Za-z_]\w*", line)
-             if len(w) > 2 and w.lower() not in CODE_WORDS and w.lower() not in low and w not in own}
+             if len(w) > 2 and w.lower() not in CODE_WORDS and w.lower() not in low and w.lower() not in allowed}
     spans = {str(n) for a, b in re.findall(r"\b(\d{1,4})\s*-\s*(\d{1,4})\b", sources)
              if int(a) < int(b) <= int(a) + 100 for n in range(int(a), int(b) + 1)}
-    return names | grounding.unsourced(re.sub(r"[A-Za-z_]\w*|,", " | ", line), set(known) | spans)
+    clean_sql = SQL_TYPES.sub(" ", line)
+    return names | grounding.unsourced(re.sub(r"[A-Za-z_]\w*|,", " | ", clean_sql), set(known) | spans)
 
 
 def panel_events(tokens, screen, known, sources, turn):
@@ -763,11 +777,12 @@ def panel_events(tokens, screen, known, sources, turn):
             facts = "|" + ln[row.end():] if row and int(row[1]) == turn.get("row_no", 0) + 1 else ln
             if row:
                 turn["row_no"] = int(row[1])
-            if fence := ln.lstrip().startswith("```"):  # a code fence carries only its language name
-                turn["code"] = not turn.get("code")
+            if fence := ln.lstrip().startswith("```"):  # only ```sql is checked as SQL code; plain fences still go through judge
+                turn["code"] = False if turn.get("code") else ln.lstrip()[3:].strip().lower().startswith("sql")
+                turn["sql_own"] = set()
             # a code line is checked by code: the judge cut true SQL lines one by one and left a broken query (eval 2026-11-08)
             code = turn.get("code") and not fence
-            if fence or not re.search(r"\w", ln) or (not (bad := code_unsourced(ln, known, sources) if code else grounding.unsourced(facts, known))
+            if fence or not re.search(r"\w", ln) or (not (bad := code_unsourced(ln, known, sources, turn.setdefault("sql_own", set())) if code else grounding.unsourced(facts, known))
                                                     and (head or code or is_label(ln) or judge(sources, ln, "\n".join(kept)))):
                 m = MAP_LINE.match(ln)  # the page draws a map where the line carries "@lat,lon"
                 kept.append(f"{ln} @{geo}" if m and (geo := geocode(m[1])) else ln)  # blank and |---| lines need no check
@@ -785,14 +800,15 @@ BASE_PROMPT = C.SYSTEM_PROMPT  # load_workers appends what is true of this setup
 SAY_WORDS = (f"{C.USER_NAME} จากคลังความรู้บีซี จากเว็บ จากเอกสารในเครื่อง ไฟล์ แหล่งข้อมูล ลูกทีม สบายดี "
              "เลขา รับสาย โทร ติดต่อกลับ แจ้ง รายละเอียด ชื่อ เบอร์ ช่องทางติดต่อ ร้าน บริษัท ธุรกิจ ทำบัญชี ความต้องการ สนใจ "
              "ราคา แพ็กเกจ โปรโมชัน "  # what the persona says when the brain has no price: "ให้ลุงจืดติดต่อกลับไปแจ้งราคา"
-             "ขั้นตอน แผนที่ "  # the panel's [ขั้นตอน] and [แผนที่] line marks
+             "นักบัญชี ยืนยัน "  # config.py's own tax/accounting disclaimer: "ต้องให้ลุงจืดหรือนักบัญชียืนยัน"
+             "ขั้นตอน แผนที่ การ์ด เคส กรณีตัวอย่าง "  # the panel's [ขั้นตอน], [แผนที่], [การ์ด] and > casebox marks
              # pronouns and polite talk: the judge still called ผม / เดี๋ยว new_info now and then and cut a whole line
              "ผม ดิฉัน คุณ ครับ ค่ะ คะ ยินดี ขอบคุณ ขอโทษ เดี๋ยว ขอ ถาม ทราบ รับทราบ เวลา ช่วย ตอนนี้ ก่อน "
              # log 2026-11-08 12:27 "รับสายแทนลุงจืดอยู่ครับ" (แทน, also 09:17) and the honest "ยังไม่แน่ใจครับ" (แน่ใจ)
              # were cut as new_info (judge replay 2 of 2 each)
              # log 2026-11-08 13:29 "มีอะไรให้ช่วยเรื่องโปรแกรมบัญชีไหมครับ" was cut over the question word ไหม (judge replay 2 of 2);
              # รึเปล่า is the one other question word still left as new (มั้ย หรือเปล่า หรือยัง บ้าง นะ are already filtered)
-             "แทน แน่ใจ ไหม รึเปล่า "
+             "แทน แน่ใจ ไหม รึเปล่า ค้น ดู ตรวจสอบ สักครู่ "
              # what it sells and asks about (the prompt's sales lines are no source): the judge cut "ผมช่วยเรื่อง
              # โปรแกรมบีซีเอไอแอคเคาท์ครับ" over โปรแกรม, and a customer's "ช่วยอะไรได้บ้าง" got silence
              "โปรแกรมบีซีเอไอแอคเคาท์ บีซี เอไอ แอคเคาท์ BC Ai Account การใช้งาน")
@@ -819,7 +835,8 @@ JUDGE_ASK = (
     # ลุงจืด 2026-11-04 "ให้คุยเหมือนเพื่อน": a question about the caller's own side is talk (the judge cut
     # "สองสาขานี่สต็อกแยกกันหรือใช้ร่วมกันครับ"), a guess or offer is not. Eval on recorded calls: 2 of 19 wrong, was 5
     "Give each of those words a type. talk = a word about the conversation itself (a greeting, polite word, "
-    "pronoun, asking, meaning, helping, finding, knowing, checking, being connected: ผม, หมายถึง, เช็ก, ไม่พบ), "
+    "pronoun, asking, meaning, helping, finding, knowing, checking, being connected, or saying that details/a table/a "
+    "query are shown on screen: ผม, หมายถึง, เช็ก, ไม่พบ, เขียนไว้บนจอ, ดูตารางบนจอ), "
     # log 2026-11-08 08:59 "สนใจเรื่องไหนเป็นพิเศษครับ", "อยากให้ช่วยเรื่องไหนเป็นพิเศษ" cut; replay 09:04 cut "…เป็นหลักครับ" on เป็นหลัก
     "a word that only says which part matters more (เป็นพิเศษ, เป็นหลัก), "
     "or a word the assistant uses to ask the user about the user's own side (their shop, work, way of doing "
@@ -829,7 +846,10 @@ JUDGE_ASK = (
     # log 2026-11-08 10:12, 10:33: "ในคลังไม่มีตัวเลขจำนวนลูกค้าครับ" was cut and the caller heard CUT_ALL instead;
     # saying what is not there is the honest answer. A check of 6 lines (2 such, 4 made-up claims): 5 right, was 3
     "or a word naming what SOURCES do not have, in a sentence that only says SOURCES or the คลัง have no such "
-    "thing and claims nothing else (ในคลังไม่มีตัวเลขจำนวนลูกค้า, ยังไม่มีคิวรี่สำเร็จรูปในคลัง). "
+    "thing and claims nothing else (ในคลังไม่มีตัวเลขจำนวนลูกค้า, ยังไม่มีคิวรี่สำเร็จรูปในคลัง), "
+    "or a mock code, mock name or scenario word inside a hypothetical sample (such as WH01, A01, SKU01, BK001, INV001, "
+    "คลังหน้าร้าน, ชั้นวาง, โซน, บิลขาย, ชื่อลูกค้าผิด, คู่ค้า, ร้านตัวอย่าง) when 'already said' contains 'ตัวอย่างสมมติ' "
+    "and the line claims no new product feature, price, tax rate or rule. "
     "same_as_source = a Thai reading, other spelling or plain "
     "synonym of a word that IS in SOURCES; put that SOURCES word in source_word (แฟล็ก -> flag). "
     # log 2026-11-07 22:02 replays: true panel lines cut for "(Ctrl+S)", "(IA)", "**2)" though the note has Ctrl+S, IA
@@ -846,6 +866,8 @@ JUDGE_ASK = (
 # said only when every phrase of an answer was cut. ลุงจืด 2026-11-08 "ผมไม่เจอในแหล่งข้อมูล ขอไม่เดานะครับ อันนี้พูดบ่อยไป":
 # an answer with some phrases kept now just ends on them (the panel still notes the cut), and this asks for more words
 CUT_ALL = "เรื่องนี้ผมยังหาข้อมูลที่แน่ใจไม่เจอครับ ช่วยเล่าเพิ่มอีกนิดได้ไหมครับ"
+BARE_ACK = re.compile(r"(?:ได้|ได้เลย|ครับ|ค่ะ|ครับผม|ใช่|เข้าใจ|รับทราบ|โอเค|อ๋อ)(?:\s*(?:ครับ|ค่ะ|เลยครับ|นะครับ))?")
+SCREEN_ONLY = "รายละเอียดผมแสดงไว้บนจอแล้วครับ"
 # DeepSeek at times ends a round on a promise ("ขอผมอ่านรายละเอียดก่อนนะครับ") with no tool call, and the turn went
 # quiet (javis 2026-11-07: 5 turns of one call, the first with no history). ponytail: a phrase list; a new wording
 # slips past until it is added here
@@ -872,12 +894,13 @@ def plain_turn(messages):
 
 
 BRAIN_DOWN = "ขอโทษครับ ตอนนี้ระบบตอบไม่ได้ชั่วคราว รบกวนถามใหม่อีกครั้งนะครับ"
-# the secretary's own fixed lines: a word a filler already said is no new claim when the answer repeats it
+# the secretary's own fixed lines: words from its greeting or status talk are no new claim
 OWN_WORDS = "\n".join([SAY_WORDS, BRAIN_DOWN, *FILLER_TEXT.values()])
 # talk about the talk itself (log 2026-11-09..10: 44 sentences cut by the judge, half of them "ช่วยสะกดหรือบอกอีกนิด
 # ได้ไหมครับ", "ขอโทษที่เข้าใจคลาดไป", "ได้ยินชัดครับ"): no product, offer, person, place or time word may go in here.
 # These shrink the new-word list only: in the judge's SOURCES they flipped small talk (A/B 2026-11-10: 3/5 -> 2/5)
-TALK_WORDS = "หมายถึง ความหมาย เข้าใจ คลาด อธิบาย สะกด อีกครั้ง ซ้ำ เล่าเพิ่ม อีกนิด สั้นๆ ได้ยิน ชัด อ๋อ งั้น ไม่เจอ ไม่พบ ไม่มีข้อมูล รู้เรื่อง"
+TALK_WORDS = ("หมายถึง ความหมาย เข้าใจ คลาด อธิบาย สะกด อีกครั้ง ซ้ำ เล่าเพิ่ม อีกนิด สั้นๆ ได้ยิน ชัด อ๋อ งั้น ไม่เจอ ไม่พบ ไม่มีข้อมูล รู้เรื่อง "
+              "เขียน บน จอ หน้าจอ ตาราง แสดง สรุป เปรียบเทียบ เทียบ ไล่ ทีละ บรรทัด แถว หัวข้อ รายการ ตรงๆ โดยตรง เฉพาะ ทั้งก้อน")
 ABOUT_ASK = "\nถ้าถูกถามว่าเป็นใครหรือทำอะไรได้ ให้ตอบว่า "  # the public prompt's last line: its self-description
 
 
@@ -902,8 +925,9 @@ def judge(sources, piece, before):
         # 6000 chars of dense Thai (JUDGE_MAX_CHARS) can fill it, and the same prompt again broke the same way 4/4.
         # So the retry reads the nearer half of the source. ponytail: the far half is unread on the retry (a would-be
         # cut either way); the upgrade is a smaller JUDGE_MAX_CHARS or a larger num_ctx, each with a judge eval before/after
+        tail = (f"{C.SAMPLE_LABEL}\n" if C.SAMPLE_LABEL.split()[0] in before and C.SAMPLE_LABEL.split()[0] not in before[-600:] else "") + (before[-600:] or "-")
         for attempt in (1, 2):
-            ask = JUDGE_ASK.format(src=src if attempt == 1 else src[len(src) // 2:], before=before[-600:] or "-",
+            ask = JUDGE_ASK.format(src=src if attempt == 1 else src[len(src) // 2:], before=tail,
                                    piece=piece, new=", ".join(new))
             r = None
             try:  # no num_ctx: the same options as warm_up, or Ollama reloads the model (~25 s)
@@ -935,17 +959,28 @@ def worker_chat(messages, tools):
 # ลุงจืด 2026-11-08 "ต้องจัดคำถามให้เหมาะก่อนค้นหา เพราะบางครั้งก็สะกดผิด หรือคนถามสับสน": the caller's raw words found
 # little (STT wrote FIFO as "ไฟโฟ"; "การคำนวณต้นทุนล่ะ" glued to the question before it found depreciation notes)
 # first wording (2026-11-08 check) dragged the last topic into a new question and added terms not asked (FIFO to a lot question)
-SEARCH_ASK = (f"{C.EXPERT}เขียนคำค้นคลังความรู้โปรแกรมบัญชี BC สำหรับคำพูดล่าสุดของผู้โทร บรรทัดแรกเป็นคำค้น 2-6 คำ ไม่ต้องอธิบาย "
+SEARCH_ASK = (f"{C.EXPERT}เขียนคำค้นคลังความรู้โปรแกรมบัญชี BC สำหรับคำพูดล่าสุดของผู้โทร บรรทัดแรกเป็นคำค้น 2-6 คำ (ถ้าคำถามมีหลายแง่มุมในเรื่องเดียวกัน คั่นคำค้นเพิ่มอีก 1-2 มุมด้วยเครื่องหมาย ; เช่น ลูกหนี้เจ้าหนี้คนเดียวกัน หักกลบ ; รายงานสถานะลูกหนี้เจ้าหนี้) ไม่ต้องอธิบาย "
               "แก้คำที่ระบบฟังเสียงเขียนผิดหรือสะกดผิด (ไฟโฟ -> FIFO, พีโอเอส -> POS, หลอด หรือ รถ ในเรื่องสต็อก -> LOT ล็อต, คิวรี่ คิวลี่ หรือ Q -> query SQL) คำที่คนไทยพูดทับศัพท์ให้ใส่ทั้งคำไทยและคำอังกฤษ "
-              "ถ้าผู้โทรถามเรื่องใหม่ ใช้เรื่องใหม่อย่างเดียว ห้ามเอาเรื่องก่อนมาปน เติมเรื่องจากบทสนทนาเฉพาะเมื่อคำพูดล่าสุดไม่บอกว่าถามเรื่องอะไร "
-              "(เช่น \"แล้วยกเลิกล่ะ\") ห้ามใส่คำที่ผู้โทรไม่ได้พูดถึง "
-              "ถ้าคำพูดล่าสุดถามหรือขอเรื่องอื่นที่ไม่ใช่เรื่องที่คุยอยู่ (ระบบอื่นของโปรแกรมเดียวกันก็นับเป็นเรื่องอื่น) "
-              "และผู้โทรไม่ได้พูดเองว่าขอเปลี่ยนเรื่อง (อาจเพราะระบบฟังเสียงผิด) ให้เพิ่มบรรทัดที่สองว่า เปลี่ยนเรื่อง: เรื่องที่คุยอยู่ | เรื่องใหม่ที่ได้ยิน "
+              "ถ้าคำพูดล่าสุดยังถามต่อในเรื่องเดิมหรือพูดคำสั้นๆ ที่อยู่ในหัวข้อที่กำลังคุยได้ (เช่น คุยเรื่องต้นทุนสินค้าอยู่แล้วถามว่า \"FIFO?\", \"แล้วยกเลิกล่ะ\", \"30 บรรทัด\", \"ขอ query\") ให้คงหัวข้อเรื่องที่กำลังคุยอยู่ไว้ในคำค้นด้วย "
+              "ถ้าเปลี่ยนไปถามระบบหรือเรื่องอื่นชัดเจน ใช้เรื่องใหม่อย่างเดียว ห้ามเอาเรื่องก่อนมาปน และห้ามใส่คำอื่นที่ผู้โทรไม่ได้พูดถึง "
+              "ถ้าคำพูดล่าสุดถามหรือขอเรื่องอื่นที่ไม่ใช่เรื่องที่คุยอยู่ (ระบบอื่นของโปรแกรมเดียวกันก็นับเป็นเรื่องอื่น เช่น คุยเรื่องต้นทุนสินค้าอยู่แล้วถามเรื่องระบบเงินเดือนพนักงาน) "
+              "และผู้โทรไม่ได้พูดเองว่าขอเปลี่ยนเรื่อง (อาจเพราะระบบฟังเสียงผิด) ต้องเพิ่มบรรทัดที่สองว่า เปลี่ยนเรื่อง: เรื่องที่คุยอยู่ | เรื่องใหม่ที่ได้ยิน "
               "ไม่ต้องเพิ่มเมื่อเป็นคำทัก คุยเล่น ขอบคุณ คำตอบที่เลขาถาม หรือคำถามต่อในเรื่องเดิม")
 
 
 # the topic ask is a fixed line (reply), so the next turn reads its two topics back
 TOPIC_ASK = re.compile(r"จะเปลี่ยนไปคุยเรื่อง(.+?) หรือยังคุยเรื่อง(.+?)ต่อครับ")
+
+
+def swarm_queries(query, heard, history):
+    """Split a Swarm planner line ('q1 | q2 | q3') into distinct parallel search angles (up to 3)."""
+    if query:
+        parts = [" ".join(p.split())[:120] for p in re.split(r"[;|]", query)]
+        if out := list(dict.fromkeys(p for p in parts if p))[:3]:
+            return out
+    last = next((m["content"].splitlines()[0] for m in reversed(history) if m["role"] == "user" and m["content"]), "")
+    raw = f"{last} {heard}" if len(heard) < 20 and last and not last.startswith("(") else heard
+    return [" ".join([raw, *grounding.acronyms(raw)]).strip()[:150]]
 
 
 def search_words(history, heard):
@@ -1042,7 +1077,7 @@ def team_done(job_id, cards, t0):  # "none": the worker came back without anythi
 
 def dispatch(calls, said, turn, tools):
     """The boss hands this round's jobs to the workers at once (searches and Google calls really overlap; LLM
-    workers share the one GPU). Status, team panel, one filler per turn, info cards; returns texts in call order."""
+    workers share the one GPU). Status, team panel, info cards; returns texts in call order."""
     if not calls:  # bcbrain down at startup: no search tools, nothing to prefetch (ThreadPoolExecutor(0) raises)
         return []
     log.info("TOOLS %s", masked(str(calls)))  # a phone read back is a tool argument too
@@ -1050,14 +1085,10 @@ def dispatch(calls, said, turn, tools):
     ids, started = team_start(calls)
     pool = ThreadPoolExecutor(len(calls))
     try:
-        futures = {pool.submit(run_tool, *c, tools): k for k, c in enumerate(calls)}  # workers start before the filler plays
+        futures = {pool.submit(run_tool, *c, tools): k for k, c in enumerate(calls)}  # start all workers at once
         jobs = " · ".join(f"{STATUS.get(n, 'กำลังตรวจสอบ')}: {' '.join(map(str, a.values()))}" for n, a in calls)
         yield AdditionalOutputs({"kind": "status", "text": jobs[:200]})
         yield from started
-        if not said and not turn.get("filled"):  # say something while the workers run
-            turn["filled"] = True
-            key = calls[0][0] if len(calls) == 1 and calls[0][0] in FILLERS else ""  # the worker count shows on screen only
-            yield (C.TTS_SAMPLE_RATE, FILLERS[key]), AdditionalOutputs({"kind": "bot", "text": FILLER_TEXT[key]})
         for f in as_completed(futures):  # each worker reports the moment it finishes
             k = futures[f]
             results[k] = f.result()
@@ -1109,48 +1140,49 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
     # a BC note read for this question: the answer explains it, so it ends with an example and starts with calc
     # (ลุงจืด 2026-11-09 "ต้องแสดงตัวอย่างด้วยทุกครั้ง"). ponytail: one more boss round before the first word on
     # every BC answer; asked by how-words only, "แล้วต้นทุนแบบไฟโฟล่ะ" got no calc and every example row was cut
-    read = False
+    read, query = False, ""
     if "web_search" in tools and LATEST_ASK.search(heard):  # changes daily: only a fresh search may answer it
         now += f"\n(ผลจาก web_search ตอนนี้: {(yield from dispatch([('web_search', {'query': heard})], said, turn, tools))[0]})"
+    elif heard and FAST_CHAT.match(heard.strip()):  # bare hello/thanks/hold: answer right away (~0.9 s faster, no wasted search)
+        pass
     elif heard and (wording := search_words(history, heard))[1] and not was:  # off the topic, maybe misheard: ask, search nothing
         topic, new = wording[1]
         log.info("topic jump? %s -> %s", topic, new)  # the log watcher learns from these
         # a fixed line, no boss: it once added "เพย์โรล" and the judge cut the whole ask (eval 2026-11-08 r17)
         turn["ask"] = f"ขอถามให้ชัดก่อนครับ จะเปลี่ยนไปคุยเรื่อง{new} หรือยังคุยเรื่อง{topic}ต่อครับ"
-    elif heard:  # BC brain + local docs search together before the boss speaks (~0.1 s, no filler needed)
-        # ponytail: docs/ chunks ride along on every question; trim or gate them if a big docs/ slows the first word
-        # a short follow-up searched alone found nothing ("เว็บ" after a question about the website): add the
-        # caller's previous words. Ceiling: a 20-character cut; the boss can still search again itself
-        # first the boss's own reading of the words (search_words); the old glue-and-spell rules only if that fails
-        if not (query := wording[0]):
-            last = next((m["content"].splitlines()[0] for m in reversed(history) if m["role"] == "user" and m["content"]), "")
-            query = f"{last} {heard}" if len(heard) < 20 and last and not last.startswith("(") else heard
-            query = " ".join([query, *grounding.acronyms(query)])  # Whisper writes "ระบบ POS" as ระบบพีโอเอส; notes say POS
-        calls = [(n, {"query": LONG_NUMBER.sub("", query) if n == "search_brain" else query}) for n in ("search_brain", "search_docs") if n in tools]
-        texts = yield from dispatch(calls, said, {"filled": True}, tools)
-        # snippets are only summaries and the boss never calls read_note itself: "ยกเลิกยังไง" got a made-up
-        # generic answer while the full note had the steps. So the BC worker reads the top hit right away and
-        # passes on only the sections the question names (the whole ~6 KB note cost +4 s before the first word)
-        # ลุงจืด 2026-11-04 "ให้ลูกทีมช่วยเยอะๆ": every note brain_hits kept (relevant, at most three, a note can come
-        # as several chunks), each read by its own worker at once (as fast as one). ponytail: notes 2-3 capped at
-        # 1500 characters, the judge reads only the last JUDGE_MAX_CHARS of its sources
-        slugs = list(dict.fromkeys(re.findall(r'"slug": "([^"]+)"', texts[0] if calls and calls[0][0] == "search_brain" else "")))
+    elif heard:  # Auto Swarm: fan out multi-angle BC brain + local docs searches in parallel, then read top notes in parallel
+        qs = swarm_queries(wording[0], heard, history)
+        query = " | ".join(qs)
+        calls = [*(( "search_brain", {"query": q2}) for q in qs if "search_brain" in tools and (q2 := LONG_NUMBER.sub("", q).strip())),
+                 *(("search_docs", {"query": qs[0]}) for _ in (1,) if "search_docs" in tools)]
+        texts = yield from dispatch(calls, said, turn, tools)
+        slugs = list(dict.fromkeys(s for (n, _), t in zip(calls, texts) if n == "search_brain"
+                                   for s in re.findall(r'"slug": "([^"]+)"', t)))[:4]
         if "read_note" in tools and slugs:
-            notes = yield from dispatch([("read_note", {"slug": s}) for s in slugs], said, {"filled": True}, tools)
+            sql_ctx = " SQL" if history and "```sql" in history[-1]["content"].lower() else ""
+            notes = yield from dispatch([("read_note", {"slug": s}) for s in slugs], said, turn, tools)
             for k, note in enumerate(notes):
-                if part := grounding.note_sections(note, f"{heard} {query}"):  # query: FIFO for a heard "ไฟโฟ"
+                part = grounding.note_sections(note, f"{heard} {' '.join(qs)}{sql_ctx}")  # query: FIFO for a heard "ไฟโฟ"
+                if not part and k == 0:  # top hit whose headings used other words: pass its lead body so round 0 answers at once
+                    part = NOTE_META.sub("", note).strip()[:1400]
+                if part:
                     calls.append(("read_note", {}))
-                    texts.append(part if k == 0 else part[:1500])
+                    texts.append(part if k == 0 else part[:1200])
         found = " ".join(f"[{n}] {t}" for (n, _), t in zip(calls, texts))
         read = any(n == "read_note" for n, _ in calls)
-        now += (f"\n(ระบบ: คำพูดนี้น่าจะหมายถึง {query} ลูกทีมค้นให้แล้ว {found} ใช้เฉพาะส่วนที่ตรงกับคำถามจริงๆ "
+        prev_kb = any(m["role"] == "assistant" and C.SCREEN_MARK in m["content"] for m in history[-2:])
+        sample_hint = ("รอบนี้เป็นการถามต่อสั้นๆ จากเรื่องเดิม ตอบตรงจุดที่ถามเพิ่มบน [จอ] ได้เลยโดยไม่ต้องวางตัวอย่างสมมติซ้ำ)"
+                       if prev_kb and not EXAMPLE_ASK.search(heard) and not CALC_ASK.search(heard) else
+                       f"คำตอบที่อธิบายเรื่องใหม่ ต่อท้าย [จอ] ด้วยบรรทัด {C.SAMPLE_LABEL} แล้วเลือกวิธีแสดงตัวอย่างให้เหมาะกับบริบท "
+                       "(ตารางคำนวณ แถบ [การ์ด]+กล่องเคส > ผังโครงสร้างย่อหน้า - /   - กล่องเคส >+[ขั้นตอน] หรือกรอบ ```sql+> พารามิเตอร์) "
+                       "ห้ามครอบผังย่อหน้าด้วย ``` และห้ามใส่ตัวเลขสองหลักขึ้นไปหรือวันที่สมมติเองโดยไม่ผ่าน calc ถ้าไม่ได้เรียก calc ให้ใช้รหัสติดตัวอักษรเช่น WH01, A01, SKU01)")
+        now += (f"\n(ระบบ: คำพูดนี้น่าจะหมายถึง {query} ลูกทีม Swarm ค้นขนานให้แล้ว {found} ใช้เฉพาะส่วนที่ตรงกับคำถามจริงๆ "
                 # 2026-11-08 04:08 call: "ไม่พบเรื่อง…ในคลังความรู้บีซีครับ หมายถึงอะไรครับ" 4 times, never a second search
-                "ถ้าไม่มีส่วนไหนตรง ให้ค้นเองอีกครั้งด้วยคำอื่นก่อน (search_brain คำไทยหรือคำอังกฤษ หรือ web_search) "
+                "ถ้าไม่มีส่วนไหนตรง ให้สั่งลูกทีมค้นหลายมุมพร้อมกันในรอบเดียวก่อน (search_brain คำไทยหรือคำอังกฤษ หรือ web_search) "
                 # 2026-11-08 05:16: asked for a worked example, it said "ยังไม่มีในคลัง" twice
                 "ถ้ายังไม่เจอและเป็นความรู้ทั่วไปที่ไม่ใช่เรื่อง BC ให้ถาม general_knowledge ถ้าเป็นเรื่อง BC จึงบอกสั้นๆ ว่ายังไม่มีข้อมูล "
                 "แล้วถามว่าหมายถึงเรื่องไหน ถ้าขอตัวอย่างหรือให้คิดเลข ให้ตั้งตัวเลขสมมติตามสูตรในผลค้นแล้วคิดด้วย calc ห้ามตอบจากความจำ "
-                # the system prompt's example rule alone: both eval runs' first answers had none (2026-11-09)
-                f"คำตอบที่อธิบายเรื่องนี้ ต่อท้าย [จอ] ด้วยบรรทัด {C.SAMPLE_LABEL} แล้วตารางตัวอย่างที่ทุกตัวเลขมาจากผล calc)")
+                + sample_hint)
     messages = [{"role": "system", "content": prompt}, *history, {"role": "user", "content": now.strip()}]
     known = grounding.numbers(" ".join(m["content"] for m in messages[1:]))  # every number a source gave this turn
     try:
@@ -1164,9 +1196,11 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
             # load_workers said is true of this setup (Google not connected, the team); fixed within a round so
             # Ollama reuses its cached prefix
             sources = "\n".join([*(m["content"] for m in messages[1:]), setup_facts(prompt), OWN_WORDS])
-            # an example starts with calc, so the numbers it shows have a source; an off-topic turn only asks
-            choice = ({"type": "function", "function": {"name": "calc"}}
-                      if rnd == 0 and "calc" in tools and (EXAMPLE_ASK.search(heard) or SUM_ASK.search(masked(heard)) or read) else None)
+            # force calc only when the turn asks for/needs math; non-math topics answer in round 0 (~1.2 s faster) with free format
+            prev_kb = any(m["role"] == "assistant" and C.SCREEN_MARK in m["content"] for m in history[-2:])
+            need_calc = bool(EXAMPLE_ASK.search(heard) or SUM_ASK.search(masked(heard))
+                             or (read and CALC_ASK.search(heard if prev_kb else f"{heard} {query}")))
+            choice = {"type": "function", "function": {"name": "calc"}} if rnd == 0 and "calc" in tools and need_calc else None
             last = rnd == C.MAX_TOOL_ROUNDS  # the note rides on this call only, never kept in the history
             tokens = llm_tokens(plain_turn(messages + [LAST_ROUND]) if last else messages, calls, None if last else specs, choice)
             said_before, mark = len(said), time.perf_counter()  # mark: where each phrase's own time starts
@@ -1185,16 +1219,26 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
                     # told the hello was said, the boss still opened with it 9 of 9 calls (eval 2026-11-09), or with a bare ครับ
                     if said == [FILLER_TEXT["hello"]] and not (text := re.sub(r"^(?:สวัสดี)?\s*(?:ครับ|ค่ะ)?\s*", "", text)):
                         continue
+                    # log 2026-11-14 05:44..06:08: "ได้ครับ" went out alone, then the real sentence was cut and the
+                    # turn ended on a bare "ได้ครับ" 3 times. Hold a lone ack to join the real sentence smoothly.
+                    if not said and BARE_ACK.fullmatch(text):
+                        turn["ack"] = text
+                        continue
+                    candidate = text if not turn.get("ack") or text.startswith(turn["ack"]) else f"{turn['ack']} {text}"
                     got = time.perf_counter()
                     # ห้ามแต่ง: a phrase with an unsourced number or fact is dropped; one line at the end says so
-                    if bad := grounding.unsourced(text, known):
-                        log.info("cut a sentence: numbers %s are in no source: %s", masked(" ".join(sorted(bad))), masked(text))
+                    if bad := grounding.unsourced(candidate, known):
+                        log.info("cut a sentence: numbers %s are in no source: %s", masked(" ".join(sorted(bad))), masked(candidate))
                         turn["cut"] = True
+                        turn.pop("ack", None)
                         continue
-                    if not judge(sources, text, " ".join(said)):
-                        log.info("cut a sentence (judge %.2fs): the judge found no source for it: %s", time.perf_counter() - got, masked(text))
+                    if not judge(sources, candidate, " ".join(said)):
+                        log.info("cut a sentence (judge %.2fs): the judge found no source for it: %s", time.perf_counter() - got, masked(candidate))
                         turn["cut"] = True
+                        turn.pop("ack", None)
                         continue
+                    text = candidate
+                    turn.pop("ack", None)
                     judged = time.perf_counter()
                     wav = speak(text)
                     # which part is slow, per phrase: the boss writing it, the judge, the voice
@@ -1221,10 +1265,17 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
         # a greeting or reminder just drops the phrase: "not found" fits no hello. Nothing said at all went silent
         # (eval 2026-11-08, 2 of 12 runs, no cut, no error): that too gets the ask-for-more line
         if heard and not said and not turn.get("silent"):
-            if not turn.get("cut"):
-                log.warning("the boss said nothing (%d rounds)", rnd + 1)
-            text = CUT_ALL
-            log.info("BOT  (all cut): %s", text)  # logged, so watch_calls.py sees how often it is said
+            if any(re.search(r"\w", s) for s in turn.get("kept", ())):  # screen details passed, only spoken summary was cut
+                text = SCREEN_ONLY
+                log.info("BOT  (screen fallback): %s", text)
+            elif turn.get("ack") and not turn.get("cut"):  # the boss meant a short acknowledgement only
+                text = turn["ack"]
+                log.info("BOT  (ack): %s", text)
+            else:
+                if not turn.get("cut"):
+                    log.warning("the boss said nothing (%d rounds)", rnd + 1)
+                text = CUT_ALL
+                log.info("BOT  (all cut): %s", text)  # logged, so watch_calls.py sees how often it is said
             said.append(text)
             yield (C.TTS_SAMPLE_RATE, speak(text)), AdditionalOutputs({"kind": "bot", "text": text})
     finally:  # also runs after barge-in; history may hold a chunk that was queued but cut before playback
@@ -1245,15 +1296,15 @@ def greet(*_, public=False):
     # ลุงจืด 2026-11-09 "เข้ามาครั้งแรก ต้องคุยเลย": the boss + voice took ~3 s to the first word; this plays at once
     yield AdditionalOutputs({"kind": "user", "text": ""})  # clears the screen, no caller line
     yield (C.TTS_SAMPLE_RATE, FILLERS["hello"]), AdditionalOutputs({"kind": "bot", "text": FILLER_TEXT["hello"]})
-    back = "ผู้โทรคนนี้เคยคุยกันแล้ว พูดต่อให้เหมาะกับคนนั้นตามบทสนทนาก่อนหน้า " if session(public)[1] else ""
+    back = "ผู้โทรคนนี้เคยคุยกันแล้ว ทักต่อแบบคนคุ้นเคยตามเรื่องก่อนหน้าได้เลย " if session(public)[1] else ""
     note = (f"(ระบบ: มีสายเข้า เลขาพูดว่า{FILLER_TEXT['hello']}ไปแล้ว ห้ามทักซ้ำ "
-            f"บอกสั้นๆ ว่าเป็นเลขาของ{C.USER_NAME} แล้วถามว่าให้ช่วยอะไร {back}"
+            f"แนะนำตัวสั้นๆ แบบเป็นกันเองว่าผมเป็นเลขาของ{C.USER_NAME} แล้วถามว่าให้ช่วยเรื่องอะไร {back}"
             "ห้ามพูดเรื่องอากาศ ข่าว หรือข้อเท็จจริงใดที่ไม่ได้มาจากผลค้น")  # it once invented sunny weather in a hello
     # ponytail: on the owner line the brief goes to whoever calls first that day (127.0.0.1 only)
     if not public and "calendar_events" in TOOLS and brief["day"] != datetime.date.today():
         brief["day"] = datetime.date.today()
         cal, mail = yield from dispatch([("calendar_events", {"days": 1}), ("gmail_search", {"query": "is:unread newer_than:1d"})],
-                                        [], {"filled": True}, TOOLS)  # no "please wait" before hello
+                                        [], {}, TOOLS)
         note += f" แล้วสรุปงานวันนี้สั้นๆ จากนัดหมาย: {cal} และอีเมลที่ยังไม่อ่าน: {mail} รายละเอียดใส่หลัง {C.SCREEN_MARK}"
     PENDING[call_id()]["note"] = note + ")"
     yield from reply((16000, np.zeros(0, dtype=np.float32)), public, hello=True)
