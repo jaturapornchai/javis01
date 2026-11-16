@@ -117,8 +117,9 @@ button,summary{font:inherit;color:inherit}
 #zOut,#zIn{width:26px;padding:0;font-size:15px;font-weight:600}
 #zPct{min-width:46px;padding:0 6px;font-variant-numeric:tabular-nums}
 
-/* turn history tabs inside #panel */
-#phist{flex:none;display:flex;align-items:center;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:4px;border-bottom:1px solid rgba(255,255,255,.06);scrollbar-width:thin}
+/* turn history tabs inside #panel. ลุงจืด 2026-11-17 "ไม่ต้องมี scroll ให้ wrap ... ไม่ต้องแสดงตั้งแต่ต้น": newest first, wrapped,
+   two rows at most (24 + 6 + 24 px, 6 padding, 1 border); an older answer stays under "เปิดดู" in the talk list */
+#phist{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px;max-height:61px;overflow:hidden;padding-bottom:6px;margin-bottom:4px;border-bottom:1px solid rgba(255,255,255,.06)}
 #phist[hidden]{display:none}
 #phist .hchip{height:24px;padding:0 10px;border-radius:12px;font-size:12px;flex:none;max-width:220px;overflow:hidden;text-overflow:ellipsis}
 
@@ -134,7 +135,7 @@ body.noleft #pbody{padding-bottom:88px}
 .md p{margin:.28em 0}
 .md ul,.md ol{margin:.28em 0;padding-left:1.35em}
 .md li{margin:.12em 0}
-.md .tw{max-width:100%;overflow:auto;margin:.45em 0;border:1px solid rgba(255,255,255,.12);border-radius:8px}
+.md .tw{max-width:100%;overflow:auto;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.28) transparent;margin:.45em 0;border:1px solid rgba(255,255,255,.12);border-radius:8px}
 .md table{border-collapse:collapse;width:100%;font-size:.94em}
 .md th,.md td{border-bottom:1px solid rgba(255,255,255,.12);border-right:1px solid rgba(255,255,255,.08);padding:.26em .6em;text-align:left;vertical-align:top}
 .md th:last-child,.md td:last-child{border-right:0}
@@ -142,12 +143,13 @@ body.noleft #pbody{padding-bottom:88px}
 .md thead th{background:rgba(15,23,42,.95);color:#cbd5e1;font-weight:600;position:sticky;top:0;z-index:1}
 .md tbody tr:nth-child(even){background:rgba(255,255,255,.025)}
 .md tbody tr:hover{background:rgba(34,211,238,.07)}
-.md th.num,.md td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+/* a number is never split: "100 ชิ้น" wraps at its space. ponytail: a table whose numbers alone are wider than the panel still scrolls sideways in .tw */
+.md th.num,.md td.num{text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
 .md code{background:rgba(255,255,255,.12);padding:0 5px;border-radius:4px;font-family:Consolas,monospace;font-size:.9em}
 .md .codebox{position:relative;margin:.45em 0}
 .md .codebox .cpcode{position:absolute;top:6px;right:6px;z-index:1;height:22px;padding:0 8px;border-radius:8px;font-size:11.5px;background:rgba(15,23,42,.88)}
-.md pre{background:rgba(6,10,22,.82);border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:8px 58px 8px 10px;margin:0;overflow-x:auto;font-size:.9em;line-height:1.45}
-.md pre code{background:none;padding:0;white-space:pre}
+.md pre{background:rgba(6,10,22,.82);border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:8px 58px 8px 10px;margin:0;white-space:pre-wrap;font-size:.9em;line-height:1.45}
+.md pre code{background:none;padding:0;white-space:pre-wrap} /* ลุงจืด 2026-11-17 "คำตอบ ไม่ต้องมี scroll ซ้ายขวา ให้ลงมาเลย": a long SQL line wraps */
 .md a{color:#7dd3fc}
 .md a.wl{color:#f0abfc;text-decoration:underline dotted}
 .md .fi{animation:sin .35s ease-out both}
@@ -830,9 +832,19 @@ async function start() {
     if (!/^[0-9a-f]{8,32}$/.test(localStorage.getItem("session") || "")) localStorage.setItem("session", hex(8));
     webrtcId = localStorage.getItem("session") + "_" + hex(5);
     // TURN for callers behind NAT (public line only; the owner page on 127.0.0.1 gets a 404 and needs none)
-    pc = new RTCPeerConnection(await fetch("/ice", { signal: AbortSignal.timeout?.(15000) }).then((r) => (r.ok ? r.json() : {})).catch(() => ({})));
+    const { callSecs, ...rtc } = await fetch("/ice", { signal: AbortSignal.timeout?.(15000) }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+    const mine = (pc = new RTCPeerConnection(rtc)), began = performance.now(), text = pc.createDataChannel("text");
     stream.getAudioTracks().forEach((t) => pc.addTrack(t, stream));
-    pc.createDataChannel("text").onmessage = (e) => {
+    // "disconnected" is often a short network blip that comes back by itself: give it 8 s; "failed" is final
+    const drop = () => { notice('การเชื่อมต่อขาดหาย กด "เริ่มคุย" เพื่อโทรใหม่'); hangup(); };
+    // ลุงจืด 2026-11-17 "คุยไปนานๆ แล้วค้าง": the server ends a public call at its time limit (callSecs) by closing the
+    // connection, and the page went on "listening" until ICE gave up. The channel closes at once, so say why.
+    text.onclose = () => {
+      if (pc !== mine) return; // our own hangup, or a newer call
+      if (!callSecs || performance.now() - began < (callSecs - 10) * 1000) return drop();
+      notice(`ครบเวลาคุย ${Math.round(callSecs / 60)} นาทีของสายนี้แล้ว กด "เริ่มคุย" เพื่อคุยต่อได้เลย`); hangup();
+    };
+    text.onmessage = (e) => {
       try {
         const m = JSON.parse(e.data);
         if (m.type === "log") onLog(m.data);
@@ -848,8 +860,6 @@ async function start() {
     pc.ontrack = (e) => {
       $("remote").srcObject = e.streams[0]; botMeter = analyser(e.streams[0]); playRemote();
     };
-    // "disconnected" is often a short network blip that comes back by itself: give it 8 s; "failed" is final
-    const drop = () => { notice('การเชื่อมต่อขาดหาย กด "เริ่มคุย" เพื่อโทรใหม่'); hangup(); };
     pc.onconnectionstatechange = () => {
       const st = pc?.connectionState;
       if (st === "connected") { clearTimeout(dropTimer); dropTimer = 0; }
@@ -1057,7 +1067,7 @@ function renderPhist() {
     b.onclick = () => { viewingSaved = idx; nav.length = 0; drawPanel(); };
     chips.push(b);
   });
-  bar.replaceChildren(...chips);
+  bar.replaceChildren(chips[0], ...chips.slice(1).reverse()); // newest first: the oldest fall off the second row
 }
 function openView(title, nodes) { nav.push({ title, nodes }); drawPanel(); return nav.at(-1); }
 function drawPanel() { // the top view, saved turn answer, or the live answer

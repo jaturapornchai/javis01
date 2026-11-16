@@ -10,6 +10,7 @@ Run: python voice_agent.py   then open http://127.0.0.1:7860
 import ast
 import asyncio
 import base64
+import calendar
 import datetime
 import hashlib
 import html
@@ -46,6 +47,7 @@ from faster_whisper.vad import VadOptions, get_speech_timestamps
 from fastrtc.utils import create_message
 from huggingface_hub import hf_hub_download
 from pypdf import PdfReader
+from pythainlp.util import num_to_thaiword
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"f5_tts_th.*")
 from f5_tts_th.normalize import normalize_text  # noqa: E402
@@ -201,24 +203,75 @@ def clean(text):
     return re.sub(r"\s+", " ", JUNK.sub("", text)).strip()
 
 
+def thai_day(d):
+    """The day in digits and in the words to say. Log 2026-11-15 11:26 and a replay 2026-11-17: the boss turned 2569
+    into สองพันหกร้อยหกสิบเก้า by itself and the number guard cut the whole date; now it has the words to copy."""
+    head, month = f"วัน{TH_DAYS[d.weekday()]}ที่", TH_MONTHS[d.month - 1]
+    return f"{head} {d.day} {month} {d.year + 543} (อ่านว่า {head}{num_to_thaiword(d.day)} {month} {num_to_thaiword(d.year + 543)})"
+
+
 def thai_now(clock=True):
     n = datetime.datetime.now()
-    day = f"วัน{TH_DAYS[n.weekday()]}ที่ {n.day} {TH_MONTHS[n.month - 1]} {n.year + 543}"
-    return f"{day} เวลา {n:%H:%M} น." if clock else day
+    return f"{thai_day(n)} เวลา {n:%H:%M} น." if clock else thai_day(n)
+
+
+def add_months(d, n):
+    y, m = divmod(d.year * 12 + d.month - 1 + n, 12)
+    return d.replace(year=y, month=m + 1, day=min(d.day, calendar.monthrange(y, m + 1)[1]))
+
+
+# ลุงจืด's call 2026-11-17 04:43 "อีก10วันวันที่เท่าไหร่", twice: the boss counted the right day itself and the number guard
+# cut it, no source held 27. The day the caller's words point at is counted here, so it is a source.
+# ponytail: digits only ("อีกสิบวัน" gets today's date and no sum); a month or year step keeps the day number, capped
+# at the month's end; a weekday name ("วันศุกร์หน้า") is not counted
+DAY_WORD = {"เมื่อวานซืน": -2, "เมื่อวาน": -1, "พรุ่งนี้": 1, "มะรืน": 2}
+DATE_SHIFT = re.compile(r"(สิ้นเดือน)(หน้า)?|(เมื่อวานซืน|เมื่อวาน|พรุ่งนี้|มะรืน)|"
+                        r"(อีก)?(\d{1,4})?(วัน|สัปดาห์|(?<!วัน)อาทิตย์|เดือน|ปี)(ข้างหน้า|หน้า|ก่อน|ที่แล้ว|ที่ผ่านมา)?")
+
+
+def date_shifts(bare, today):
+    """["อีก10วัน ตรงกับวันศุกร์ที่ 27 พฤศจิกายน 2569 (อ่านว่า ...)", ...] for the days the caller's words (no spaces) point at."""
+    out = []
+    for m in DATE_SHIFT.finditer(bare):
+        end, nxt, word, more, n, unit, tail = m.groups()
+        label = m.group(0)
+        try:
+            if end:
+                day = add_months(today, 1 if nxt else 0)
+                day = day.replace(day=calendar.monthrange(day.year, day.month)[1])
+            elif word:
+                day = today + datetime.timedelta(DAY_WORD[word])
+            else:
+                back = tail in ("ก่อน", "ที่แล้ว", "ที่ผ่านมา")
+                if tail == "หน้า" or (back and not n):  # เดือนหน้า, ปีที่แล้ว: one step; "วันที่ 10 เดือนหน้า" is no 10 months
+                    if unit == "วัน":  # วันหน้า, วันก่อน name no day
+                        continue
+                    n, label = 1, unit + tail
+                elif not (n and (more or tail)):  # "เครดิต 30 วัน" points at no day
+                    continue
+                step = -int(n) if back else int(n)
+                day = (add_months(today, step * (12 if unit == "ปี" else 1)) if unit in ("เดือน", "ปี") else
+                       today + datetime.timedelta(step * (1 if unit == "วัน" else 7)))
+        except (ValueError, OverflowError):  # past year 9999
+            continue
+        out.append(f"{label} ตรงกับ{thai_day(day)}")
+    return out[:3]
 
 
 def clock_note(heard):
     """The clock for this turn, only when the caller asks the date or time (why: see reply)."""
     bare = re.sub(r"\s+", "", heard)  # the STT spaces words out: "วันนี้ วัน อะไร" missed วันอะไร (call 2026-11-09 06:39)
-    if DATE_ASK.search(bare) or TIME_ASK.search(bare):
-        return f"\n(ระบบ: นาฬิกาในเครื่องตอนนี้ {thai_now(bool(TIME_ASK.search(bare)))})"
+    shifts = date_shifts(bare, datetime.date.today())
+    if shifts or DATE_ASK.search(bare) or TIME_ASK.search(bare):
+        counted = f" ระบบนับวันให้แล้ว ใช้วันที่ตามนี้ ห้ามนับเอง: {' / '.join(shifts)}" if shifts else ""
+        return f"\n(ระบบ: นาฬิกาในเครื่องตอนนี้ {thai_now(bool(TIME_ASK.search(bare)))}{counted})"
     return ""
 
 
 _THAI_TERMS = (
-    ("BC AI Account", "บีซี เอไอ แอคเคาท์"),
+    ("BC AI Account", "บีซี เอไอ แอคเคานต์"),
     ("Google Drive", "กูเกิลไดรฟ์"),
-    ("Account", "แอคเคาท์"),
+    ("Account", "แอคเคานต์"),
     ("FIFO", "ไฟโฟ"),
     ("LIFO", "ไลโฟ"),
     ("LOT", "ล็อต"),
@@ -236,6 +289,21 @@ _THAI_TERMS = (
     ("Google", "กูเกิล"),
     ("Online", "ออนไลน์"),
     ("Cloud", "คลาวด์"),
+    # ลุงจืด 2026-11-17 "พูดภาษาอังกฤษ ไม่ชัด": each word below was read three times as written and three times in this Thai
+    # spelling, then read back by Whisper. As written it came back wrong (Channel "จารย์ลก", Webhook "เว็บอก", Prep dropped),
+    # in Thai spelling right. LINE was spelled out letter by letter ("แอลไอเอ็นอี") by the rule below.
+    # ponytail: only words the log shows the boss leaving in English; a new one is read as written until it is added here
+    ("LINE", "ไลน์"),
+    ("Channel", "แชนแนล"),
+    ("Prep", "เพรป"),
+    ("e-Tax", "อีแท็กซ์"),
+    ("AutoCare", "ออโต้แคร์"),
+    ("Webhook", "เว็บฮุก"),
+    ("ChatGPT", "แชตจีพีที"),
+    ("Starter", "สตาร์ตเตอร์"),
+    ("Desktop", "เดสก์ท็อป"),
+    ("query", "คิวรี"),
+    ("e-Filing", "อีไฟลิ่ง"),
 )
 _TERM_RE = re.compile(r"(?i)(?<![A-Za-z0-9])(" + "|".join(re.escape(k) for k, _ in _THAI_TERMS) + r")(?![A-Za-z0-9])")
 _TERM_MAP = {k.lower(): f" {v} " for k, v in _THAI_TERMS}
@@ -246,8 +314,10 @@ _LETTER_TH = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", (
 
 
 def _thai_pronounce(text):
-    """Map English business acronyms/terms to spaced Thai phonetics because F5-TTS-THAI's vocab is Thai-only."""
-    out = _TERM_RE.sub(lambda m: _TERM_MAP[m.group(1).lower()], str(text))
+    """Write English terms in Thai spelling and spell short acronyms out by letter. F5-TTS-THAI does read English
+    text, but badly: the words in _THAI_TERMS came back wrong as written and right in Thai spelling (Whisper read-back)."""
+    # the prompts and the boss spell Account "แอคเคาท์": the greeting came back "BCAX เข้าครับ"; with "แอคเคานต์" it came back right
+    out = _TERM_RE.sub(lambda m: _TERM_MAP[m.group(1).lower()], str(text).replace("แอคเคาท์", "แอคเคานต์"))
     out = re.sub(r"(?<![A-Za-z0-9])[A-Z]{2,5}(?![A-Za-z0-9])",
                  lambda m: " " + "".join(_LETTER_TH[c] for c in m.group(0)) + " ", out)
     return re.sub(r"\s+", " ", out).strip()
@@ -271,6 +341,7 @@ def load_tts():
         ref_np = np.mean(ref_np, axis=1, dtype=np.float32)
     if sr != C.TTS_SAMPLE_RATE:
         ref_np = librosa.resample(ref_np, orig_sr=sr, target_sr=C.TTS_SAMPLE_RATE)
+    ref_np = np.concatenate([ref_np, np.zeros(int(C.REF_TAIL_SILENCE_S * C.TTS_SAMPLE_RATE), np.float32)])  # why: see config.py
     ref_tensor = torch.from_numpy(np.asarray(ref_np, dtype=np.float32)).reshape(1, -1)
     ref_text = C.REF_TEXT.strip()
     if not ref_text.endswith((". ", "。")):
@@ -380,6 +451,16 @@ def calc_value(node, src):
     raise ValueError("ใช้ได้แค่ตัวเลข + - * / และวงเล็บ")
 
 
+def big_reading(value):
+    """log 2026-11-15 09:22: calc gave 200,000,000,000,000, the boss read it out as สองแสนล้านล้าน (1000 times too big)
+    and the number guard cut the only answer. From a million up a result carries its Thai words for the boss to copy."""
+    if abs(value) < 1_000_000:
+        return ""
+    whole, _, frac = f"{abs(value):f}".partition(".")
+    words = num_to_thaiword(int(whole)) + ("จุด" + "".join(num_to_thaiword(int(d)) for d in frac) if frac else "")
+    return f" (อ่านว่า {'ลบ' if value < 0 else ''}{words})"
+
+
 def calc(lines):
     """ลุงจืด 2026-11-08 "เอา deepseek มาเสริมได้ถ้าไม่รู้หรือทำไม่ได้": a worked example the caller asked for
     (call 05:16, "ช่วยทำตัวอย่างให้หน่อย") had every number cut, none was in a source. Code does the sums, so the
@@ -394,7 +475,7 @@ def calc(lines):
         try:
             value = calc_value(ast.parse(src, mode="eval").body, src)
             value = value.quantize(Decimal("0.01"), ROUND_HALF_UP).normalize()  # baht and satang, half up, once
-            out.append(f"{label.strip()} {src} = {value:,f}".strip())
+            out.append(f"{label.strip()} {src} = {value:,f}{big_reading(value)}".strip())
         except (SyntaxError, ValueError, ArithmeticError) as e:
             out.append(f"{line.strip()} คิดไม่ได้ ({e})")
     text = "\n".join(out)
@@ -1349,7 +1430,8 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
                     log.info("BOT  (%.2fs | boss %.2f judge %.2f voice %.2f): %s", time.perf_counter() - t0, got - mark,
                              judged - got, time.perf_counter() - judged, masked(text))
                     mark = time.perf_counter()
-                    lead = 0.0 if turn.get("voiced") else 0.18
+                    # speak() trims each phrase to its speech: without a gap the next sentence started 0.08 s after the last
+                    lead = C.SENTENCE_GAP_S if turn.get("voiced") else 0.18
                     turn["voiced"] = True
                     said.append(text)
                     yield bot_out(text, wav, lead=lead)
@@ -1360,6 +1442,13 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
                 turn["nudged"] = True  # once: a second bare promise just ends the turn
                 messages += [{"role": "assistant", "content": " ".join(said[said_before:])}, {"role": "user", "content": STALL_NUDGE}]
                 continue
+            # ลุงจืด 2026-11-17 "ถามเรื่องทั่วไป ก็ต้องตอบได้": 38 of 960 turns (log 2026-11-14..17) ended on a fallback line
+            # with every spoken sentence cut, and the boss asked general_knowledge in 7. When nothing it said stood,
+            # code asks that worker once: the answer is a source for the next round, said as general knowledge.
+            # ponytail: asked with the caller's bare words, so a "แล้วอันนี้ล่ะ" gets a vague answer and the old fallback
+            if (not calls and heard and not said and turn.get("cut") and rnd < C.MAX_TOOL_ROUNDS and "general_knowledge" in tools
+                    and not any(c["function"]["name"] == "general_knowledge" for m in messages for c in m.get("tool_calls", ()))):
+                calls, turn["cut_open"] = [{"id": "general", "name": "general_knowledge", "args": {"question": heard}}], False
             if not calls:
                 break
             messages.append({"role": "assistant", "content": " ".join(said[said_before:]), "tool_calls": [
@@ -1566,8 +1655,12 @@ class BargeInReplyOnPause(ReplyOnPause):
         if not (state.pause_detected and not checked and state.stream is not None):
             return
         try:  # an STT/GPU error raised here ended listening for the rest of the call
-            noise = (not voiced((state.sampling_rate, state.stream)).size or self.hears_itself(state)
-                     or self.just_filler(state))
+            speech = voiced((state.sampling_rate, state.stream))
+            noise = (not speech.size or self.hears_itself(state) or self.just_filler(state)
+                     or self.no_cut_in(state, speech.size / 16000))
+            if speech.size:  # how loud each turn is: the numbers a gate for far-off voices (TV, other people) needs
+                log.info("heard %.2fs of speech at %.0f dBFS%s", speech.size / 16000,
+                         20 * np.log10(max(float(np.sqrt(np.mean(speech ** 2))), 1e-5)), ", not a turn" if noise else "")
         except Exception:
             log.exception("turn check failed, taking the speech as a turn")
             noise = False
@@ -1627,6 +1720,25 @@ class BargeInReplyOnPause(ReplyOnPause):
             return True
         return False
 
+    # ลุงจืด 2026-11-17 "mic ไวเกินไป": any sound the VAD took for speech cut the answer off, also one with no words
+    # in it (reply() then said nothing). Log 2026-11-14..17: 336 of 937 caller turns came within 2 s of a phrase of
+    # its own. ponytail: fixed list; a real cut-in under BARGE_MIN_SPEECH_S that is not in it is lost
+    CUT_INS = {"หยุด", "หยุดก่อน", "พอ", "พอแล้ว", "เดี๋ยว", "เดี๋ยวก่อน", "ครับ", "ค่ะ", "ใช่", "ไม่", "ไม่ใช่", "ได้", "หืม"}
+
+    def no_cut_in(self, state, speech_s):
+        """While the secretary thinks, or a phrase of it played during the caller's speech, a sound with no words
+        or one under BARGE_MIN_SPEECH_S that is no stop word or short answer is no turn (LiveKit's interruption
+        min_duration). An answer that starts after its last phrase ended is always a turn."""
+        end = time.monotonic() - C.PAUSE_SILENCE_S  # the speech ended that long before this check
+        if not (state.responding or any(s < end and e > end - speech_s for s, e, _ in self.playing)):
+            return False
+        early = EARLY.get(id(self))
+        heard = re.sub(r"[\s.,!?…]+", "", early[1].result() if early else transcribe((state.sampling_rate, state.stream)))
+        if not heard or (speech_s < C.BARGE_MIN_SPEECH_S and heard not in self.CUT_INS):
+            log.info("too short to cut in (%.2fs of speech), not a turn: %s", speech_s, masked(heard))
+            return True
+        return False
+
     def push_turn(self, interrupt):
         """Start a reply with no speech (typed chat, system note), like receive() does on a pause; `interrupt` also cuts the bot off."""
         if self.state.responding:
@@ -1667,14 +1779,15 @@ aioice.ice.Connection.get_component_candidates.__defaults__ = (1,)
 
 def ice_servers():
     """TURN for the customer's browser, as coturn's use-auth-secret expects: the user name is an expiry time and
-    the password its HMAC with the shared secret, so nothing long-lived ever reaches a browser."""
+    the password its HMAC with the shared secret, so nothing long-lived ever reaches a browser. callSecs: the call's
+    time limit, so the page can say why the line closed (static/index.html, text.onclose)."""
     if not (C.TURN_HOST and C.TURN_SECRET):
-        return {"iceServers": []}
+        return {"iceServers": [], "callSecs": C.PUBLIC_CALL_SECS}
     user = f"{int(time.time()) + 3600}:javis-{os.urandom(4).hex()}"  # coturn counts user-quota per name after ":", so one per /ice
     key = base64.b64encode(hmac.new(C.TURN_SECRET.encode(), user.encode(), hashlib.sha1).digest()).decode()
     return {"iceServers": [{"urls": f"stun:{C.TURN_HOST}:3478"},
                            {"urls": [f"turn:{C.TURN_HOST}:3478?transport=udp", f"turn:{C.TURN_HOST}:3478?transport=tcp"],
-                            "username": user, "credential": key}]}
+                            "username": user, "credential": key}], "callSecs": C.PUBLIC_CALL_SECS}
 
 
 PUBLIC_SITE = "https://javis.bcsmethai.com"
@@ -1784,12 +1897,17 @@ def make_app(stream, public=False):
 
 def tunnel():
     """Customers reach the public port through Caddy on PUBLIC_SSH: a reverse SSH tunnel, redialled when it drops.
-    ponytail: a killed server can leave its ssh behind; that one still forwards to the same port, so it is harmless"""
+    ponytail: a killed server can leave its ssh behind; that one still forwards to the same port and holds it, so
+    every dial of this one is refused at once (2026-11-14..17: 19,000 warnings, one every 10 s). Said once a streak"""
+    refused = False
     while True:
+        began = time.monotonic()
         subprocess.run(["ssh", "-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=20",
                         "-o", "ServerAliveCountMax=3", "-R", f"127.0.0.1:{C.PUBLIC_TUNNEL_PORT}:127.0.0.1:{C.PUBLIC_PORT}", C.PUBLIC_SSH],
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        log.warning("public tunnel closed, redialling in 10 s")
+        again, refused = refused, time.monotonic() - began < 30
+        if not (again and refused):
+            log.warning("public tunnel closed, redialling every 10 s%s", " (refused at once: no network, or an old ssh holds the port)" if refused else "")
         time.sleep(10)
 
 

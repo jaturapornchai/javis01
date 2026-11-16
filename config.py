@@ -168,7 +168,10 @@ SYSTEM_PROMPT = (
     "คำตอบที่เป็นข้อมูลให้ขึ้นบรรทัดใหม่ พิมพ์ [จอ] แล้วเขียนรายละเอียดทั้งหมดที่มีในผลค้นสมองให้ครบถ้วน เช่น ขั้นตอน เมนู ตัวเลข "
     "ถ้าค้นมาจากเว็บให้แนบลิงก์ไว้บนหน้าจอ ส่วนเรื่องโปรแกรมไม่ต้องเขียนบรรทัดที่มาคลังความรู้ท้ายจอ เรียงเป็นหัวข้อและขั้นตอนสั้นๆ ให้อ่านง่าย "
     # ลุงจืด 2026-11-04..14: flow motion graphic, KPI cards, blockquote casebox, nested tree, and a map, drawn by the page
-    "ถ้าเป็นขั้นตอนทำตามลำดับ ให้มีบรรทัด [ขั้นตอน] ขั้นแรก → ขั้นที่สอง → ขั้นที่สาม ไม่เกินแปดขั้น "
+    # ลุงจืด 2026-11-17 "คำตอบ ให้พยายามสร้าง doc flow motion graphic เสมอ": 6 of 10 replayed program questions drew one
+    "ทุกคำตอบเรื่องโปรแกรมหรือการทำงานให้พยายามมีบรรทัด [ขั้นตอน] เสมอ เป็นภาพทางเดินเอกสารหรือลำดับการทำงานของเรื่องที่ถาม "
+    "เขียนเป็น [ขั้นตอน] ขั้นแรก → ขั้นที่สอง → ขั้นที่สาม ไม่เกินแปดขั้น ใช้เฉพาะเอกสาร เมนู และลำดับที่ผลค้นระบุ "
+    "ถ้าผลค้นไม่ได้บอกลำดับหรือทางเดินเอกสารเลย ไม่ต้องใส่ ห้ามแต่งขั้นเอง "
     "ถ้าเป็นการสรุปตัวเลขหรือเทียบค่าสำคัญสั้นๆ ใช้บรรทัด [การ์ด] หัวข้อ: ค่า | หัวข้อ: ค่า ไม่เกินสี่ช่องต่อแถว "
     "ถ้าแหล่งระบุที่ตั้งทางภูมิศาสตร์ ให้มีบรรทัด [แผนที่] ตามด้วยชื่อสถานที่ตามแหล่ง ห้ามเดาสถานที่เอง ถ้าแหล่งไม่ได้ระบุที่ตั้งห้ามใส่บรรทัด [แผนที่] "
     "ส่วนหลัง [จอ] ไม่ถูกอ่านออกเสียง จึงใช้หัวข้อ รายการ ตาราง Markdown และตัวเลขได้ "
@@ -206,12 +209,20 @@ DESKTOP_SAFE_APPS = {"notepad", "calc", "explorer", "mspaint", "chrome", "msedge
 REF_AUDIO_PATH = os.path.join(BASE_DIR, "ref_audio.wav")
 REF_SEED_PATH = os.path.join(BASE_DIR, "models", "voice_seeds", "data", "seeds", "spk09_m_young_clear", "main_voice.wav")
 REF_TEXT = "สวัสดีครับทุกคน วันนี้ผมมีอะไรน่าสนใจมาแนะนำเยอะมาก ตามมาดูกันเลยครับ"
+# silence added after the reference clip (the F5-TTS docs ask for about 1 s at its end). Measured 2026-11-17 on 60
+# logged phrases read back by the STT: the tail of REF_TEXT ("ตามมาดูกันเลยครับ") leaked into the start of 20 with
+# +0.0 s, 19 with +0.5 s, 6 with +1.0 s. The length of a phrase does not change (it is set from the text alone).
+# ponytail: 6 of 60 still leak; a re-cut ref_audio.wav with a clean tail of its own is the upgrade
+REF_TAIL_SILENCE_S = 1.0
 REF_VOICE = "th-TH-NiwatNeural"  # edge-tts fallback voice used by generate_ref.py when REF_SEED_PATH is absent
 TTS_BACKEND = os.environ.get("TTS_BACKEND", "f5_thai")
 TTS_MODEL = os.environ.get("TTS_MODEL", "VIZINTZOR/F5-TTS-THAI")
 TTS_STEP = 16  # flow-matching steps: ~0.37-0.50 s/phrase (trim RTF ~0.20)
 TTS_CFG = 2.0  # guidance scale
-TTS_SPEED = 1.0
+# ลุงจืด 2026-11-17 "พูดเร็วหรือรัวเกินไป": at 1.0 a lone "ครับ" came out as nothing the STT could hear; 36 logged phrases
+# read back by the STT had CER 0.21 on the short ones (<= 30 characters) at 1.0 and 0.06 at 0.9
+TTS_SPEED = 0.9
+SENTENCE_GAP_S = 0.35  # silence before each sentence after the first of a reply. ponytail: a chosen value, not measured; tune it by ear
 TTS_SAMPLE_RATE = 24000
 
 # --- Turn-taking (LiveKit-style endpointing on top of FastRTC's Silero VAD) ---
@@ -219,7 +230,10 @@ TTS_SAMPLE_RATE = 24000
 # mid-sentence pauses (~0.3 s) in Thai speech; raise it if background noise keeps the turn open.
 VAD_MIN_SPEECH_MS = 100
 PAUSE_STEP_S = 0.1  # how often the end-of-turn check runs
-PAUSE_SILENCE_S = 0.65  # silence after the last word that ends the turn; raises tolerance for natural mid-sentence breathing
+# silence after the last word that ends the turn. ลุงจืด 2026-11-17 "หยุดคิดแป๊บเดียวก็ตัดจบ": 0.65 s cut a caller who
+# stopped to think and answered each piece of the sentence. ponytail: every reply starts 0.35 s later than at 0.65
+PAUSE_SILENCE_S = 1.0
+BARGE_MIN_SPEECH_S = 0.5  # speech shorter than this does not cut the secretary off (LiveKit interruption min_duration default)
 EARLY_STT_SILENCE_S = 0.25  # silence that starts the transcription early (dropped if the caller goes on)
 LIVE_STEP_S = 0.18  # incremental OpenThai streaming cadence for live Karaoke partials
 CARRY_MERGE_S = 5.0  # window (s) to merge a resumed phrase if barge-in stopped reply() before the bot spoke

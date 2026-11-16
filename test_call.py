@@ -7,6 +7,7 @@ Run: python test_call.py
 """
 import asyncio
 import base64
+import datetime
 import fractions
 import json
 import os
@@ -50,6 +51,18 @@ va.judge = real_judge
 assert [r.split("|")[1].strip() for r in turn["kept"][2:] if r.startswith("|")] == [str(i) for i in range(1, 12)], turn["kept"]
 # the STT spaces words out: "วันนี้ วัน อะไร" got no date (call 2026-11-09 06:39)
 assert "วัน" in va.clock_note("วันนี้ วัน อะไร") and "เวลา" in va.clock_note("ตอนนี้ กี่ โมง") and not va.clock_note("ขอดูต้นทุน")
+# ลุงจืด's call 2026-11-17 04:43: "อีก10วันวันที่เท่าไหร่" had its true answer cut over 27, a day no source held; code counts it
+day = datetime.date(2026, 11, 17)
+assert va.date_shifts("อีก10วันวันที่เท่าไหร่", day) == ["อีก10วัน ตรงกับวันศุกร์ที่ 27 พฤศจิกายน 2569 (อ่านว่า วันศุกร์ที่ยี่สิบเจ็ด พฤศจิกายน สองพันห้าร้อยหกสิบเก้า)"] and "ระบบนับวันให้แล้ว" in va.clock_note("อีก 10 วัน")
+assert va.date_shifts("สิ้นเดือนหน้า", day)[0].startswith("สิ้นเดือนหน้า ตรงกับวันพฤหัสบดีที่ 31 ธันวาคม 2569 ") and " 17 สิงหาคม 2569 " in va.date_shifts("3เดือนก่อน", day)[0]
+assert va.date_shifts("วันที่10เดือนหน้า", day)[0].startswith("เดือนหน้า ตรงกับวันพฤหัสบดีที่ 17 ธันวาคม 2569 ") and va.add_months(datetime.date(2026, 1, 31), 1).day == 28
+assert not any(va.date_shifts(q, day) for q in ("เครดิต30วัน", "วันอาทิตย์หน้า", "วันก่อนคุยกัน", "ปี2569", "อีก9999ปี"))
+# log 2026-11-15 09:22: the boss read 200,000,000,000,000 out 1000 times too big; a result from a million up carries its words
+assert "(อ่านว่า สองร้อยล้านล้าน)" in va.calc("1000000*200000000")[1] and "อ่านว่า" not in va.calc("999999+0")[1]
+assert va.grounding.numbers(va.calc("1234567.891")[1]) == {"1234567.89", "1234567.891"}
+# ลุงจืด 2026-11-17 "พูดภาษาอังกฤษ ไม่ชัด": LINE was spelled out letter by letter; words the voice reads badly as written get Thai spelling
+assert va._thai_pronounce("ทัก LINE OA ผ่าน Webhook") == "ทัก ไลน์ โอเอ ผ่าน เว็บฮุก" and "อีแท็กซ์" in va._thai_pronounce("ออก e-Tax ได้")
+assert va._thai_pronounce("โปรแกรมบีซีเอไอแอคเคาท์ครับ") == "โปรแกรมบีซีเอไอแอคเคานต์ครับ" and "แอคเคานต์" in va._thai_pronounce("BC AI Account")
 # an example's label line is no claim (ลุงจืด 2026-11-09), passed by code: in the judge's sources it cut small talk
 va.judge, turn = (lambda sources, piece, before: False), {}
 list(va.panel_events(iter([f"#### {C.SAMPLE_LABEL}\n### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)\n| ขั้น | ทำอะไร |\n"]), [], set(), "", turn))
@@ -189,6 +202,18 @@ for heard, responding, playing, want in (("เอ่อ...", False, (), True), (
     state = NS(stream=np.zeros(16000), sampling_rate=16000, responding=responding)
     assert va.BargeInReplyOnPause.just_filler(h, state) is want, (heard, responding, playing)
 va.EARLY.clear()
+# ลุงจืด 2026-11-17 "mic ไวเกินไป": while the secretary thinks or talks, a wordless or short sound is no turn; a stop
+# word, a long cut-in, and a short answer that starts after its last phrase ended are turns
+h, now = NS(playing=(), CUT_INS=va.BargeInReplyOnPause.CUT_INS), time.monotonic()
+over, ended = ((now - 5, now + 5, "x"),), ((now - 9, now - C.PAUSE_SILENCE_S - 0.6, "x"),)
+for heard, speech_s, responding, playing, want in (("", 2.0, True, (), True), ("เช่นกัน", 0.3, False, over, True),
+                                                   ("หยุด", 0.3, False, over, False), ("ขอดูต้นทุนสินค้า", 1.2, False, over, False),
+                                                   ("สอง", 0.3, False, ended, False), ("", 0.3, False, (), False)):
+    (f := Future()).set_result(heard)
+    va.EARLY[id(h)] = (None, f)
+    h.playing = playing
+    assert va.BargeInReplyOnPause.no_cut_in(h, NS(responding=responding), speech_s) is want, (heard, speech_s, playing)
+va.EARLY.clear()
 # AirPods call 2026-11-08 23:03: the turn checks ran on every frame until the reply started (3-8 times a turn).
 # They run once a pause
 from fastrtc.reply_on_pause import AppState
@@ -286,7 +311,7 @@ assert {"/robots.txt", "/sitemap.xml", "/llms.txt", "/ice"} <= pub_routes and "/
 assert "Googlebot" in va.ROBOTS_TXT and "OAI-SearchBot" in va.ROBOTS_TXT and "https://javis.bcsmethai.com/sitemap.xml" in va.ROBOTS_TXT
 assert "<loc>https://javis.bcsmethai.com/</loc>" in va.SITEMAP_XML and "BC AI Account" in va.LLMS_TXT
 pron = va._thai_pronounce("ระบบ BC AI Account คิดต้นทุน FIFO, LOT และบัญชี GL")
-assert "บีซี เอไอ แอคเคาท์" in pron and "ไฟโฟ" in pron and "ล็อต" in pron and "จีแอล" in pron, pron
+assert "บีซี เอไอ แอคเคานต์" in pron and "ไฟโฟ" in pron and "ล็อต" in pron and "จีแอล" in pron, pron
 # pre-voice continuation merge: a mid-thought barge-in before the bot speaks carries the first fragment cleanly
 saved_tr2, carry_inputs = va.transcribe, iter(["อยากถามเรื่อง", "การคิดต้นทุนไฟโฟครับ"])
 va.transcribe = lambda audio: next(carry_inputs)
