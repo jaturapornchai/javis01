@@ -170,6 +170,18 @@ body.noleft #pbody{padding-bottom:88px}
 @keyframes fglow{0%,60%,100%{box-shadow:none}30%{box-shadow:0 0 12px rgba(240,171,252,.8);border-color:#f0abfc}}
 .md .map{margin:.5em 0}.md .map iframe{display:block;width:100%;height:240px;border:0;border-radius:8px;background:#0b1020}
 .md .map figcaption{font-size:.8em;color:#aab4cc;margin-top:4px}
+/* pictures and YouTube of the notes behind an answer (ลุงจืด 2026-11-17 "ระบบสมองเพิ่มภาพ และ youtube ถ้าเกี่ยวข้องให้เปิดมาด้วย"):
+   a grid that wraps, never a sideways scroll */
+.md .media{margin:.9em 0 .2em}
+.md .media figcaption,.md .player figcaption{font-size:.8em;color:#aab4cc;margin:0 0 6px}
+.md .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.md .mitem{position:relative;display:flex;flex-direction:column;gap:4px;min-width:0;padding:0;border:0;background:none;text-align:left;cursor:pointer}
+.md .mitem img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:#0b1020}
+.md .mitem .mt{font-size:.8em;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.md .mitem.yt::before{content:"▶ วิดีโอ";position:absolute;left:6px;top:6px;padding:1px 8px;border-radius:999px;background:rgba(0,0,0,.72);color:#fff;font-size:.75em}
+.md .player{margin:0}.md .player iframe{display:block;width:100%;aspect-ratio:16/9;border:0;border-radius:8px;background:#000}
+.md .player figcaption{margin:6px 0 0}
+.md img.pic{display:block;max-width:100%;height:auto;margin:.4em 0;border-radius:8px;cursor:zoom-in}
 .md .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.45em;margin:.48em 0}
 .md .kpi{display:flex;flex-direction:column;justify-content:center;gap:.14em;padding:.45em .68em;border-radius:8px;background:rgba(15,23,42,.74);border:1px solid rgba(34,211,238,.28);border-left:3px solid #22d3ee}
 .md .kpi .kl{font-size:.82em;line-height:1.3;color:#94a3b8}
@@ -253,6 +265,7 @@ body.noleft #hud{bottom:54px}
   #hud{left:12px;bottom:52px;top:auto;width:68px}
   #pbody,#cards,#trlist{padding-bottom:76px}
   #dev{position:static}#dev>div{position:fixed;left:8px;right:8px;top:52px;width:auto}
+  #note{display:none} /* ลุงจืด 2026-11-17: on a phone the yellow notice floated over the tab buttons */
 }
 @media (prefers-reduced-motion:reduce){#teamlist .dot,.card,#user .kw.pop,#user.live::after,#panel,.md .fi,.md .flow li,.md tr.in,.md tr.in td{animation:none}}
 </style>
@@ -342,6 +355,8 @@ const OTHER_COLOR = 0x9ca3af; // any source string not in SRC
 
 let state = "idle", statusText = "", userLevel = 0, botLevel = 0, panelText = "", panelBlocks = 0;
 let savedPanels = [], viewingSaved = -1, totalCards = 0, userClosedRight = false;
+// this turn's pictures and videos (from its cards) and their block under the answer; the mic as it was before a video took it off
+let panelMedia = [], mediaNode = null, videoMic = null;
 const ui = { call: $("callBtn"), mic: $("micBtn"), pill: $("pill"), topState: $("topState"), user: $("user"), bot: $("bot"), cards: $("cards"), list: $("trlist"), note: $("note") };
 
 /* ---------- UI state ---------- */
@@ -517,7 +532,7 @@ function onEvent(ev) {
   } else if (ev.kind === "status") {
     statusText = ev.text; setState("searching");
   } else if (ev.kind === "info") {
-    addCard(ev);
+    addCard(ev); addMedia(ev.media);
   } else if (ev.kind === "team") {
     onTeam(ev);
   } else if (ev.kind === "panel") {
@@ -604,18 +619,19 @@ setInterval(() => { // live seconds while a worker runs
     r.st.textContent = `กำลังทำ ${((performance.now() - r.t0) / 1000).toFixed(1)} วิ` + (r.run.size > 1 ? ` (${r.run.size} คน)` : "");
 }, 200);
 
+const ytId = (u) => String(u).match(/^https:\/\/(?:(?:www\.|m\.)?youtube\.com\/watch\?(?:[^#]*&)?v=|youtu\.be\/)([\w-]{11})(?![\w-])/)?.[1];
 function safeUrl(u) {
   try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : null; } catch { return null; }
 }
 let turnText = "", turnBox = null; // the question and its card group
-function makeCard({ source, title, snippet, url, slug }) { // web: the page itself; BC note: in full; else its text in the panel
+function makeCard({ source, title, snippet, url, slug, media }) { // web: the page itself; BC note: in full; else its text in the panel
   const href = source === "web" && url ? safeUrl(url) : null, c = el("a", "card");
   if (href) { c.href = href; c.target = "_blank"; c.rel = "noopener noreferrer"; }
   else {
     c.href = "#";
     c.onclick = (e) => {
       e.preventDefault();
-      slug ? openNote(slug, title) : openView(title || "ข้อมูล", [el("p", "", snippet || "")]);
+      slug ? openNote(slug, title) : openView(title || "ข้อมูล", [el("p", "", snippet || ""), ...[mediaBlock(media)].filter(Boolean)]);
       if (matchMedia("(max-width:900px)").matches) document.querySelector('#mtabs [data-tab="panel"]').click();
     };
   }
@@ -637,6 +653,49 @@ function addCard(card) {
     for (const id of ["cardCnt", "mCardCnt"]) { $(id).textContent = totalCards; $(id).hidden = false; }
     if (!showRight && !userClosedRight && prevMax === null) { showRight = true; applyLayout(); }
   }
+}
+/* pictures and YouTube of the notes behind an answer (ลุงจืด 2026-11-17 "ระบบสมองเพิ่มภาพ และ youtube ถ้าเกี่ยวข้องให้เปิดมาด้วย") */
+function addMedia(media) { // a card's pictures and videos go under this turn's answer, each once
+  const n = panelMedia.length;
+  for (const m of Array.isArray(media) ? media : []) // ponytail: the first 6 of a turn, as the cards arrive
+    if (panelMedia.length < 6 && m && !panelMedia.some((x) => x.url === m.url)) panelMedia.push(m);
+  if (panelMedia.length === n) return;
+  mediaNode = mediaBlock(panelMedia);
+  if (!nav.length && viewingSaved < 0) panelBlocks = renderMd($("pbody"), panelText, panelBlocks, mediaNode);
+}
+function mediaBlock(media) { // small pictures in a grid; a tap opens one in the panel. A video only by its id, a picture only over https
+  const fig = el("figure", "media"), grid = el("div", "mgrid");
+  for (const m of media || []) {
+    if (!m) continue;
+    const yt = m.kind === "youtube" && /^[\w-]{11}$/.test(m.id || "") ? m.id : "";
+    const src = yt ? `https://i.ytimg.com/vi/${yt}/hqdefault.jpg` : m.kind === "image" ? safeUrl(m.url) : null;
+    if (!src?.startsWith("https://")) continue;
+    const b = el("button", "mitem" + (yt ? " yt" : "")), img = el("img"), title = String(m.title || (yt ? "วิดีโอสอนใช้งาน" : "ภาพหน้าจอ"));
+    b.type = "button"; b.title = title; img.src = src; img.alt = ""; img.loading = "lazy";
+    b.append(img, el("span", "mt", title));
+    b.onclick = () => (yt ? openVideo(yt, title) : openImage(src, title));
+    grid.append(b);
+  }
+  if (!grid.children.length) return null;
+  fig.dataset.src = "\n:media"; // no markdown block has this source, so renderMd never takes it for one
+  fig.append(el("figcaption", "", "ภาพและวิดีโอที่เกี่ยวข้อง · แตะเพื่อเปิดดู"), grid);
+  return fig;
+}
+function openVideo(id, title) { // plays in the panel, on a tap only: it never talks over the answer by itself. ‹ ย้อนกลับ closes it
+  const box = el("figure", "player"), f = el("iframe");
+  f.src = `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0`; f.title = title;
+  f.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen"; f.allowFullscreen = true;
+  box.append(f, el("figcaption", "", "ระหว่างดูวิดีโอไมค์จะปิดไว้ กด “ย้อนกลับ” เมื่อดูจบ แล้วคุยต่อได้เลย"));
+  openView(title, [box]);
+}
+function openImage(src, title) { // the whole picture in the panel; a tap on it opens the file itself in a new tab
+  const a = el("a"), img = el("img", "pic");
+  a.href = src; a.target = "_blank"; a.rel = "noopener noreferrer"; img.src = src; img.alt = title;
+  a.append(img); openView(title, [a]);
+}
+function videoMicSync(open) { // a video's sound is not the caller talking: the mic is off while one is open, then back as it was
+  if (open && videoMic === null) { videoMic = micOn; setMic(false); }
+  else if (!open && videoMic !== null) { if (videoMic) setMic(true); videoMic = null; }
 }
 
 /* ---------- HUD ring ---------- */
@@ -910,13 +969,19 @@ const LIST = /^(\s*)([-*]|\d+\.)\s+(.*)$/, TABLE_SEP = /^\s*\|?\s*:?-{3,}:?\s*(\
 const NUM_COL = /^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?$/;
 const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
 function inline(parent, text) {
-  for (const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)\s]+\))/)) {
-    const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/), href = link && safeUrl(link[2]);
+  for (const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)\s]+\)|\[[^\]]+\]\([^)\s]+\))/)) {
+    const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/), href = link && safeUrl(link[2]), yt = href && ytId(href);
+    const pic = part.match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/), src = pic && safeUrl(pic[2]); // a note's own screenshot, shown where the note has it
     const wiki = part.match(/^\[\[([\w.-]{1,120})(?:\|([^\]]+))?\]\]$/); // [[note-slug]] or [[note-slug|label]]: opens that BC note
     if (wiki) { const a = el("a", "wl", wiki[2] || wiki[1]); a.href = "#"; a.onclick = (e) => { e.preventDefault(); openNote(wiki[1]); }; parent.append(a); }
     else if (/^\*\*[^*]+\*\*$/.test(part)) parent.append(el("strong", "", part.slice(2, -2)));
     else if (/^`[^`]+`$/.test(part)) parent.append(el("code", "", part.slice(1, -1)));
-    else if (href) { const a = el("a", "", link[1]); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; parent.append(a); }
+    else if (src?.startsWith("https://")) { const img = el("img", "pic"); img.src = src; img.alt = pic[1]; img.loading = "lazy"; img.onclick = () => openImage(src, pic[1] || "ภาพหน้าจอ"); parent.append(img); }
+    else if (href) { // a YouTube link plays here in the panel; any other link opens its page
+      const a = el("a", "", link[1]); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+      if (yt) a.onclick = (e) => { e.preventDefault(); openVideo(yt, link[1]); };
+      parent.append(a);
+    }
     else if (part) parent.append(part); // plain text node; unknown syntax stays literal
   }
 }
@@ -1032,8 +1097,9 @@ function rowsIn(block) { // the table rows not on screen yet slide in, one after
     r.querySelectorAll("td").forEach((td) => countUp(td, n * 110 + 120));
   });
 }
-function renderMd(box, text, animateFrom = Infinity) { // blocks that did not change stay put: a map replaced would reload
-  const blocks = mdBlocks(text), old = [...box.children]; let k = 0;
+function renderMd(box, text, animateFrom = Infinity, tail = null) { // blocks that did not change stay put: a map replaced would reload
+  // tail: the turn's pictures and videos, kept last and never redrawn while the answer above them grows
+  const blocks = mdBlocks(text), old = [...box.children].filter((b) => b !== tail); let k = 0;
   while (k < blocks.length && k < old.length && old[k].dataset.src === blocks[k].dataset.src) k++;
   if (old[k]?.matches(".flow") && blocks[k]?.matches(".flow")) // a flow still streaming in: its steps on screen do not pop again
     [...blocks[k].children].slice(0, old[k].children.length).forEach((li) => li.classList.add("seen"));
@@ -1044,9 +1110,10 @@ function renderMd(box, text, animateFrom = Infinity) { // blocks that did not ch
   blocks.slice(k).forEach((b, i) => {
     const live = k + i >= animateFrom;
     if (live && !(grows && i === 0)) b.classList.add("fi");
-    box.append(b);
+    box.insertBefore(b, tail?.parentNode === box ? tail : null);
     if (live || (grows && i === 0)) rowsIn(b);
   });
+  if (tail && tail.parentNode !== box) box.append(tail);
   return blocks.length;
 }
 /* drill-down (ลุงจืด 2026-11-04 "กดดูได้ต่อเนื่อง") + turn answer history bar */
@@ -1076,8 +1143,9 @@ function drawPanel() { // the top view, saved turn answer, or the live answer
   $("pback").hidden = !v;
   $("copyBtn").hidden = !v && !activeMd;
   if (v) box.replaceChildren(...v.nodes);
-  else if (viewingSaved >= 0) renderMd(box, activeMd);
-  else panelBlocks = renderMd(box, panelText);
+  else if (viewingSaved >= 0) renderMd(box, activeMd, Infinity, mediaBlock(savedPanels[viewingSaved].media));
+  else panelBlocks = renderMd(box, panelText, Infinity, mediaNode);
+  videoMicSync(!!box.querySelector(".player"));
   renderPhist();
   box.scrollTop = 0;
 }
@@ -1088,7 +1156,7 @@ async function openNote(slug, title) {
     if (!notes.has(slug)) { const r = await fetch("/note?slug=" + encodeURIComponent(slug)); if (!r.ok) throw r.status; notes.set(slug, (await r.json()).text); }
     const text = notes.get(slug), meta = el("details"); // slug/sources lines (code paths, owner line only) fold away
     meta.append(el("summary", "", "ที่มาในโค้ด"), el("p", "", (text.match(/^(slug|sources):.*$/gm) || []).join("\n")));
-    v.nodes = [...mdBlocks(text.replace(/^(slug|sources):.*\n?/gm, "")), ...(meta.lastChild.textContent ? [meta] : [])]; v.title = title || notes.get(slug).match(/^#\s+(.+)/m)?.[1] || slug;
+    v.nodes = [...mdBlocks(text.replace(/^(slug|sources|youtube_videos|images|web_pages):.*\n?/gm, "")), ...(meta.lastChild.textContent ? [meta] : [])]; v.title = title || notes.get(slug).match(/^#\s+(.+)/m)?.[1] || slug;
   } catch { v.nodes = [el("p", "", "เปิดข้อมูลนี้ไม่สำเร็จ ลองกดใหม่อีกครั้ง")]; }
   if (nav.at(-1) === v) drawPanel();
 }
@@ -1097,18 +1165,18 @@ function showPanel(text) { // each panel event replaces the live answer; switch 
   $("copyBtn").hidden = !text;
   if (nav.length) return;
   const box = $("pbody"), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
-  panelBlocks = renderMd(box, text, panelBlocks);
+  panelBlocks = renderMd(box, text, panelBlocks, mediaNode);
   if (stick) box.scrollTop = box.scrollHeight;
 }
 function hidePanel() {
-  panelText = ""; viewingSaved = -1; nav.length = 0; drawPanel();
+  panelText = ""; panelMedia = []; mediaNode = null; viewingSaved = -1; nav.length = 0; drawPanel();
 }
 function archivePanel() { // save full turn output for 1-click recall in #phist and #trlist
   if (!panelText) return;
   const heading = panelText.match(/^#{1,3}\s+(.+)/m)?.[1] || turnText || "รายละเอียด";
   const label = heading.replace(/[*`]/g, "").trim().slice(0, 26);
   const idx = savedPanels.length;
-  savedPanels.push({ label, text: panelText });
+  savedPanels.push({ label, text: panelText, media: panelMedia });
   renderPhist();
   const li = el("li", "arc"), btn = el("button", "trview", `เปิดดู: ${label} ›`);
   btn.type = "button";
@@ -1125,6 +1193,8 @@ const DEMO_MD = ["## สรุปราคาทองวันนี้", "ข�
   "", "[ขั้นตอน] เช็กราคาประกาศ → เลือกร้าน → ซื้อพร้อมใบรับประกัน", "", "[ขั้นตอน]", "1. เปิดดูราคาประกาศล่าสุดของสมาคมค้าทองคำ", "2. เลือกร้านที่มีป้ายทองมาตรฐาน", "3. นำบัตรประชาชนไปด้วยเมื่อซื้อทองแท่ง", "4. รับใบรับประกันและเก็บไว้ใช้ตอนขายคืน", "",
   "[แผนที่] เยาวราช กรุงเทพมหานคร @13.74191,100.50895", "",
   "อ้างอิง: [สมาคมค้าทองคำ](https://example.com/gold)"];
+const DEMO_MEDIA = [{ kind: "youtube", id: "74csOGLdjJk", title: "EP.3 สอนใช้งานวงจรจัดซื้อเต็มระบบ: สั่งซื้อ (PO) จ่ายมัดจำ รับของเข้าคลัง และส่งคืนลดหนี้", url: "https://www.youtube.com/watch?v=74csOGLdjJk&list=PLO9P7tPZLXB0" },
+  { kind: "image", title: "ฟอร์มสร้างใบสั่งซื้อสินค้าใหม่ใน BC Ai Account", url: "https://bcaccount.com/manual/images/06-purchase-order-new-form.png" }];
 function runDemo() {
   hangup(); ui.call.textContent = "วางสาย"; ui.call.className = "btn sm danger";
   const t0 = performance.now();
@@ -1146,7 +1216,7 @@ function runDemo() {
     [5200, () => { onLog("response_starting"); onEvent({ kind: "bot", text: "วันนี้ทองคำแท่งขายออกประมาณสี่หมื่นสองร้อยบาท ", dur: 1.9 }); }],
     [7200, () => onEvent({ kind: "bot", text: "ผมเจอข้อมูลในเอกสารของคุณด้วย ", dur: 1.8 })],
     [9200, () => onEvent({ kind: "bot", text: "ต้องการให้สรุปรายละเอียดเพิ่มไหมครับ", dur: 1.9 })],
-    [4600, () => onEvent({ kind: "info", source: "bcbrain", title: "ขายสินค้า/บริการ และใบกำกับภาษีเต็มรูป", snippet: "วิธีออกใบกำกับภาษีขายเต็มรูปและการลงบัญชีในระบบ BC", url: null, slug: "doc-sale-invoice", job: 3 })],
+    [4600, () => onEvent({ kind: "info", source: "bcbrain", media: DEMO_MEDIA, title: "ขายสินค้า/บริการ และใบกำกับภาษีเต็มรูป", snippet: "วิธีออกใบกำกับภาษีขายเต็มรูปและการลงบัญชีในระบบ BC", url: null, slug: "doc-sale-invoice", job: 3 })],
     // one panel event per line, as the server sends them
     ...DEMO_MD.map((_, k) => [4800 + k * 120, () => onEvent({ kind: "panel", text: DEMO_MD.slice(0, k + 1).join("\n") })]),
     [11200, () => onEvent({ kind: "done" })],

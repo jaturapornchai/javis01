@@ -18,7 +18,7 @@ DEVICE = "cuda" if HAS_CUDA else "cpu"
 
 # --- STT (OpenThai 2.0 ASR Streaming ONNX on CPU) ---
 # Streaming Zipformer-RNNT Thai + mixed English model (iApp). Runs incremental chunked decode on CPU so the GPU
-# stays free for Ollama + F5-TTS-THAI. Prompt index: "th-TH" (32) or "th-mix" (63).
+# stays free for Ollama + the TTS. Prompt index: "th-TH" (32) or "th-mix" (63).
 STT_MODEL = os.environ.get("STT_MODEL", "iapp/OpenThai2.0-ASR-Streaming-ONNX")
 STT_MODEL_DIR = os.environ.get("STT_MODEL_DIR", os.path.join(BASE_DIR, "models", "openthai2_asr_fp32"))
 STT_LANGUAGE = os.environ.get("STT_LANGUAGE", "th-TH")
@@ -54,7 +54,10 @@ EXPERT = "คุณเป็นเพื่อนที่เชี่ยวช�
 
 SILENT_MARK = "<เงียบ>"  # the boss's whole answer to words not said to it (others in the room)
 SYSTEM_PROMPT = (
-    "คุณคือผู้ช่วยส่วนตัวคุยทางโทรศัพท์ พูดจาเป็นธรรมชาติ สุภาพ กระชับ ตอบสั้นๆ ไม่เกิน 1 ถึง 2 ประโยคต่อครั้ง "
+    # ลุงจืด 2026-11-17 "ระบบนี้เป็น พนักงาน Call Center พยายามตอบให้ลูกค้าเข้าใจ" (he chose: explain longer in speech):
+    # the old cap of 1 to 2 sentences for every answer now holds for greetings and small talk only
+    "คุณคือผู้ช่วยส่วนตัวคุยทางโทรศัพท์ พูดจาเป็นธรรมชาติ สุภาพ คุยเล่นหรือทักทายตอบสั้นๆ 1 ถึง 2 ประโยค "
+    "ส่วนคำตอบที่เป็นข้อมูลให้อธิบายจนผู้ฟังเข้าใจ ประมาณ 3 ถึง 5 ประโยค "
     "ห้ามใช้ Markdown ห้ามใช้สัญลักษณ์พิเศษ เช่น ดอกจัน หรือหัวข้อย่อยโดยเด็ดขาด "
     "คำศัพท์ภาษาอังกฤษและตัวเลขทุกตัวต้องเขียนเป็นคำอ่านภาษาไทยทั้งหมดเพื่อให้ระบบอ่านออกเสียงได้ถูกต้อง "
     "เช่น คำว่า Server ให้เขียนว่า เซิร์ฟเวอร์ หรือ 24 ชั่วโมง ให้เขียนว่า ยี่สิบสี่ชั่วโมง "
@@ -71,7 +74,12 @@ SYSTEM_PROMPT = (
     # ลุงจืด 2026-11-04 "คุยให้ลูกค้าสบายใจ และให้ข้อมูลที่ลูกค้าเข้าใจง่าย"; source terms stay as written (the judge
     # checks the sources' own words), so plain words go around them, never instead of them
     "ให้ลูกค้าสบายใจ ฟังให้จบ ทวนสิ่งที่ลูกค้าบอกสั้นๆ ไม่เร่งและไม่กดดันให้ซื้อ ใช้คำง่ายๆ แบบคนทั่วไปพูดกัน "
-    "ศัพท์บัญชีหรือชื่อเมนูให้คงตามแหล่ง ถ้าแหล่งมีคำอธิบายให้เล่าคำอธิบายนั้นด้วยคำง่ายๆ "
+    # ลุงจืด 2026-11-17 (he chose: explain terms in plain words). The explanation is lifted from the results in their
+    # own words: a judge spy over 8 questions saw 167 pieces of source words pass, and 16 of the 19 pieces holding one
+    # everyday word of the boss's own ("ยื่น", "ขยับ", "ทิ้ง", "คอย") cut
+    "ศัพท์บัญชีหรือชื่อเมนูให้คงตามแหล่ง และทุกครั้งที่พูดศัพท์บัญชีหรือชื่อเมนูออกไป ให้พูดต่อทันทีว่ามันคืออะไรหรือใช้ทำอะไร "
+    "โดยหยิบคำอธิบายที่ผลค้นเขียนไว้มาเล่า เลือกส่วนที่คนไม่ได้เรียนบัญชีฟังแล้วเข้าใจง่ายที่สุด ใช้คำเดียวกับผลค้น ไม่เปลี่ยนเป็นคำของตัวเอง "
+    "ถ้าผลค้นไม่ได้อธิบายศัพท์นั้นไว้ ไม่ต้องอธิบาย ห้ามแต่งความหมายเอง "
     # ลุงจืด 2026-11-04 "ให้คุยเหมือนเพื่อน คุยไปเรื่อยๆ วางแผนการคุย เดาใจลูกค้าด้วย": a guess at the need is asked,
     # never told ("ร้านกาแฟน่าจะสนใจระบบขายหน้าร้าน" was a guess said as a fact, and the judge cut its sibling)
     "งานหลักคือตอบคำถามได้ทุกเรื่องในระบบและช่วยแนะนำโปรแกรมบีซีเอไอแอคเคาท์ ถ้าผู้โทรชวนคุยหรือดูโปรแกรม ให้วางแผนคุยเป็นขั้น รู้จักกัน ถามชื่อและธุรกิจ "
@@ -163,8 +171,16 @@ SYSTEM_PROMPT = (
     "(ยกเว้นข้อมูลที่ค้นสดจากเว็บค่อยบอกสั้นๆ ว่าเช็กจากเว็บให้แล้ว) แต่เนื้อหาทุกอย่างต้องมาจากสมองจริงเท่านั้น ห้ามเดาหรือแต่งเติมเอง "
     # "flag 45" told as "ธงสี่ห้า" was cut: the checker matches the sources' own words
     "เล่าจากผลค้นสมองให้ใช้คำสำคัญเดียวกับในผลค้น ห้ามแปล เปลี่ยนศัพท์เฉพาะ หรือวงเล็บคำแปลภาษาอังกฤษเพิ่มเองทั้งในคำพูดและบน [จอ] คำอังกฤษในส่วนคำพูดให้เขียนเป็นคำอ่านไทย เช่น flag เป็น แฟล็ก "
-    # ลุงจืด 2026-11-04 "พูดสั้นๆ กระชับ แต่ข้อมูลที่แสดงต้องครบถ้วน": calls spoke 4-6 phrases of menu detail
-    "ส่วนคำพูดเล่าคำตอบหลักแบบเพื่อนคุยกันให้เข้าใจทันทีในหนึ่งถึงสองประโยค ไม่พูดห้วนๆ แค่ว่าอยู่บนจอ แต่ห้ามไล่รายละเอียด ขั้นตอนยาว หรือรายการย่อยในคำพูด "
+    # ลุงจืด 2026-11-04 "พูดสั้นๆ กระชับ แต่ข้อมูลที่แสดงต้องครบถ้วน": calls spoke 4-6 phrases of menu detail.
+    # ลุงจืด 2026-11-17 "พนักงาน Call Center พยายามตอบให้ลูกค้าเข้าใจ": one to two sentences became three to five
+    # (12 replayed questions averaged 151 spoken characters). Short one-fact sentences and no click-by-click steps:
+    # with "ภาพรวมว่าทำอะไรก่อนหลัง" the boss chained steps into long sentences, and the judge, which reads
+    # JUDGE_MAX_CHARS of a 12-27K character turn, cut 7 sentences in 12 answers (none before)
+    "ส่วนคำพูดให้อธิบายคำตอบแบบพนักงานคอลเซ็นเตอร์ที่อยากให้ลูกค้าเข้าใจจริงๆ ประมาณสามถึงห้าประโยคสั้นๆ ประโยคละเรื่องเดียว "
+    "เล่าจากผลค้นว่าเรื่องนี้คืออะไร ใช้ทำอะไร และจุดสำคัญที่ต้องรู้ ไม่พูดห้วนๆ แค่ว่าอยู่บนจอ "
+    "แต่ห้ามไล่ขั้นตอนกดทีละขั้น ชื่อช่องทีละช่อง หรือรายการย่อยในคำพูด ส่วนนั้นให้อยู่บน [จอ] "
+    "ทุกประโยคที่อธิบายให้ใช้คำกริยาและคำขยายคำเดียวกับในผลค้น เติมเองได้แค่คำเชื่อมและหางเสียง "
+    "เพราะประโยคที่มีคำซึ่งผลค้นไม่ได้ใช้จะถูกตัดทิ้งก่อนถึงผู้ฟัง "
     "คำตอบที่เป็นข้อมูลให้ขึ้นบรรทัดใหม่ พิมพ์ [จอ] แล้วเขียนรายละเอียดทั้งหมดที่มีในผลค้นสมองให้ครบถ้วน เช่น ขั้นตอน เมนู ตัวเลข "
     "ถ้าค้นมาจากเว็บให้แนบลิงก์ไว้บนหน้าจอ ส่วนเรื่องโปรแกรมไม่ต้องเขียนบรรทัดที่มาคลังความรู้ท้ายจอ เรียงเป็นหัวข้อและขั้นตอนสั้นๆ ให้อ่านง่าย "
     # ลุงจืด 2026-11-04..14: flow motion graphic, KPI cards, blockquote casebox, nested tree, and a map, drawn by the page
@@ -201,27 +217,33 @@ REMIND_MIN = 10  # say a calendar event this many minutes before it starts
 # programs the computer worker may open without asking; anything else waits for USER_NAME's yes
 DESKTOP_SAFE_APPS = {"notepad", "calc", "explorer", "mspaint", "chrome", "msedge", "excel", "winword", "powerpnt", "outlook"}
 
-# --- TTS (VIZINTZOR/F5-TTS-THAI + real human Thai voice seed) ---
-# Picked 2026-11-14 after head-to-head RTX 5060 Ti benchmark against ThonburianTTS megaF5 and OmniVoice:
-# F5-TTS-THAI v1 scored CER 0.000 on core Thai phrases (no dropped "สวัสดีครับ"), trim RTF ~0.20 at step=16,
-# and uses ~751 MiB VRAM (~4.2 GB free alongside Ollama). Reference: kunato/wayu-kokoro-thai-v1 spk09_m_young_clear (Apache-2.0).
+# --- TTS (hotdogs/omnivoice-thai: OmniVoice fine-tuned on Thai, cloning the voice of ref_audio.wav) ---
+# ลุงจืด 2026-11-17 picked it by ear ("ผมเลือก OmniVoice ฉบับฝึกไทยเพิ่ม (hotdogs) เปลี่ยนเลย") out of five voices saying the
+# same javis sentences: F5-TTS-THAI v1 (the voice until then), ThonburianTTS megaF5, OmniVoice, this one, ElevenLabs v4.
+# Measured that day on the RTX 5060 Ti at step 16, the F5 voice in brackets: 0.10 s of work per second of speech (0.18),
+# 0.39-0.69 s for the first sentence of a reply (0.72-1.76), 3.4 GB of VRAM at its peak in voice_agent.speak (1.9).
+# License: the model card says Apache-2.0; its base k2-fsa/OmniVoice was noted as CC-BY-NC on 2026-11-04, when ลุงจืด chose
+# to use OmniVoice all the same. Reference voice of a fresh install: kunato/wayu-kokoro-thai-v1 spk09_m_young_clear
+# (Apache-2.0), written to ref_audio.wav by generate_ref.py. ref_audio.wav is not in git, and on ลุงจืด's machine it is
+# another voice since 2026-11-17 ("อยากได้เสียง แบบ Ekkarat ตอนนี้เสียงไม่ค่อยดัง แก่ด้วย", then "ใช้เสียง A" after hearing
+# five by ear): one that belongs to no person, made by OmniVoice voice design saying REF_TEXT (instruct "male, young
+# adult, moderate pitch"). Kept beside the seeds: models/voice_seeds/ref_audio_voice_a_2026-11-17.wav, and the clip
+# before it as ref_audio_spk09_before_2026-11-17.wav.
 # To clone your own voice: replace ref_audio.wav (3-8 s, 24 kHz mono, clean speech) and set REF_TEXT to match.
 REF_AUDIO_PATH = os.path.join(BASE_DIR, "ref_audio.wav")
 REF_SEED_PATH = os.path.join(BASE_DIR, "models", "voice_seeds", "data", "seeds", "spk09_m_young_clear", "main_voice.wav")
 REF_TEXT = "สวัสดีครับทุกคน วันนี้ผมมีอะไรน่าสนใจมาแนะนำเยอะมาก ตามมาดูกันเลยครับ"
-# silence added after the reference clip (the F5-TTS docs ask for about 1 s at its end). Measured 2026-11-17 on 60
-# logged phrases read back by the STT: the tail of REF_TEXT ("ตามมาดูกันเลยครับ") leaked into the start of 20 with
-# +0.0 s, 19 with +0.5 s, 6 with +1.0 s. The length of a phrase does not change (it is set from the text alone).
-# ponytail: 6 of 60 still leak; a re-cut ref_audio.wav with a clean tail of its own is the upgrade
-REF_TAIL_SILENCE_S = 1.0
 REF_VOICE = "th-TH-NiwatNeural"  # edge-tts fallback voice used by generate_ref.py when REF_SEED_PATH is absent
-TTS_BACKEND = os.environ.get("TTS_BACKEND", "f5_thai")
-TTS_MODEL = os.environ.get("TTS_MODEL", "VIZINTZOR/F5-TTS-THAI")
-TTS_STEP = 16  # flow-matching steps: ~0.37-0.50 s/phrase (trim RTF ~0.20)
+TTS_MODEL = os.environ.get("TTS_MODEL", "hotdogs/omnivoice-thai")
+TTS_STEP = 16  # diffusion steps, the setting of the samples ลุงจืด picked from
 TTS_CFG = 2.0  # guidance scale
-# ลุงจืด 2026-11-17 "พูดเร็วหรือรัวเกินไป": at 1.0 a lone "ครับ" came out as nothing the STT could hear; 36 logged phrases
-# read back by the STT had CER 0.21 on the short ones (<= 30 characters) at 1.0 and 0.06 at 0.9
+# ลุงจืด 2026-11-17 "ต้องการให้ ตอบเร็วๆ แต่ครบถ้วน ฟังสบายๆ" and "อยากได้เสียง แบบ Ekkarat": 0.9 is Ekkarat's pace. Measured
+# on the same three texts without the gaps: this voice at 1.0 took 27.4 s, the ElevenLabs Ekkarat samples 29.9 s (0.92),
+# F5-TTS-THAI at 0.9 30.9 s; F5-TTS-THAI at 1.0 was "พูดเร็วหรือรัวเกินไป" and this voice at 1.0 is faster than that.
 TTS_SPEED = 0.9
+# the loudness every phrase is brought to, as rms (0.16 is -16 dBFS). ลุงจืด 2026-11-17 "ตอนนี้เสียงไม่ค่อยดัง": the voice gave
+# -23 to -17 dBFS, a different level each phrase. ponytail: a chosen level, not picked by ear; raise it if it is still quiet
+TTS_RMS = 0.16
 SENTENCE_GAP_S = 0.35  # silence before each sentence after the first of a reply. ponytail: a chosen value, not measured; tune it by ear
 TTS_SAMPLE_RATE = 24000
 
@@ -247,7 +269,9 @@ SERVER_PORT = int(os.environ.get("PORT", "7860"))
 # else (no desktop, docs, Google, web), set in code. The owner line above stays 127.0.0.1 only.
 PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", "7861"))
 PUBLIC_CALLS = int(os.environ.get("PUBLIC_CALLS", "3"))  # customers at once: one GPU, DeepSeek cost
-PUBLIC_CALL_SECS = int(os.environ.get("PUBLIC_CALL_SECS", "600"))  # a customer call hangs up after this
+# a customer call hangs up after this. ลุงจืด 2026-11-17 "ขยายเป็น 30 นาที": at 600 his own test call closed mid-talk.
+# ponytail: a call holds one of PUBLIC_CALLS seats for up to this long; the TURN password from /ice lasts 1 hour, so keep it under 3600
+PUBLIC_CALL_SECS = int(os.environ.get("PUBLIC_CALL_SECS", "1800"))
 PUBLIC_SSH = os.environ.get("PUBLIC_SSH", "")  # user@host running Caddy for the site; "" = no tunnel (local only)
 PUBLIC_TUNNEL_PORT = int(os.environ.get("PUBLIC_TUNNEL_PORT", "17861"))  # that host's 127.0.0.1 port Caddy proxies to
 TURN_HOST = os.environ.get("TURN_HOST", "")  # coturn (use-auth-secret) for callers behind NAT; "" = none

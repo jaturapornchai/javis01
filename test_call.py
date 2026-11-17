@@ -63,6 +63,20 @@ assert va.grounding.numbers(va.calc("1234567.891")[1]) == {"1234567.89", "123456
 # ลุงจืด 2026-11-17 "พูดภาษาอังกฤษ ไม่ชัด": LINE was spelled out letter by letter; words the voice reads badly as written get Thai spelling
 assert va._thai_pronounce("ทัก LINE OA ผ่าน Webhook") == "ทัก ไลน์ โอเอ ผ่าน เว็บฮุก" and "อีแท็กซ์" in va._thai_pronounce("ออก e-Tax ได้")
 assert va._thai_pronounce("โปรแกรมบีซีเอไอแอคเคาท์ครับ") == "โปรแกรมบีซีเอไอแอคเคานต์ครับ" and "แอคเคานต์" in va._thai_pronounce("BC AI Account")
+# numbers reach the voice as Thai words. Before 2026-11-17 the voice's own normalizer read 87.50 as 8,750 and "3-5 วัน" as 35 days
+for digits, words in (("ภาษี 87.50 บาท", "ภาษี แปดสิบเจ็ดจุดห้าศูนย์ บาท"), ("ภาษี 7%", "ภาษี เจ็ดเปอร์เซ็นต์"), ("31 ชิ้น", "สามสิบเอ็ด ชิ้น"),
+                      ("1,250.75 บาท", "หนึ่งพันสองร้อยห้าสิบจุดเจ็ดห้า บาท"), ("100.00 บาท", "หนึ่งร้อย บาท"), ("3-5 วัน", "สาม ถึง ห้า วัน"),
+                      ("10:30 น.", "สิบนาฬิกาสามสิบนาที"), ("โทร 081-234-5678", "โทร ศูนย์แปดหนึ่ง สองสามสี่ ห้าหกเจ็ดแปด"),
+                      ("เลขที่ 0812", "เลขที่ ศูนย์แปดหนึ่งสอง"), ("ภ.พ.30", "ภ.พ. สามสิบ"), ("ปี 2569", "ปี สองพันห้าร้อยหกสิบเก้า")):
+    assert va._thai_pronounce(va._say_numbers(digits)) == words, (digits, va._thai_pronounce(va._say_numbers(digits)))
+# one loudness for every phrase, and a peak that the gain would lift past 0.95 is eased down, not clipped
+quiet = (0.02 * np.sin(np.arange(24000) / 20)).astype(np.float32)
+quiet[12000] = 0.5
+assert abs(float(np.sqrt(np.mean(va.level(quiet) ** 2))) - C.TTS_RMS) < 0.02 and float(np.max(np.abs(va.level(quiet)))) <= 0.9501
+# the lead nudge: the sentence the boss said when it took a number and stored nothing, and a plain answer that is no promise
+assert va.LEAD_PROMISE.search("รับทราบครับคุณสมชัย เดี๋ยวผมประสานให้ติดต่อกลับเรื่องโปรแกรมเลยครับ")
+assert not va.LEAD_PROMISE.search("ต้นทุนเฉลี่ยคือเอามูลค่าของเดิมรวมกับของใหม่ แล้วหารด้วยจำนวนคงเหลือทั้งหมดครับ")
+assert 9 <= len(va.spoken_digits("เบอร์ 081 234 5678 ครับ")) <= 15 and len(va.spoken_digits("ซื้อ 3 ชิ้น 250 บาท")) < 9
 # an example's label line is no claim (ลุงจืด 2026-11-09), passed by code: in the judge's sources it cut small talk
 va.judge, turn = (lambda sources, piece, before: False), {}
 list(va.panel_events(iter([f"#### {C.SAMPLE_LABEL}\n### ตัวอย่างสมมติ (ไม่ใช่ข้อมูลจริง)\n| ขั้น | ทำอะไร |\n"]), [], set(), "", turn))
@@ -296,6 +310,42 @@ toks = iter(["สรุปว่า", "พร้อมครับ ", "[จ", "�
 assert "".join(va.until_screen(toks, screen)) == "สรุปว่าพร้อมครับ ", screen  # marker split across tokens
 assert screen == ["\n# หัวข้อ"] and list(toks) == ["\n- ก", "\n- ข"]  # rest stays in the stream for the panel
 assert "".join(va.until_screen(iter(["ไม่มี [", "ข้อมูลจอ"]), [])) == "ไม่มี [ข้อมูลจอ"  # partial marker released
+
+# pictures and YouTube of a note (ลุงจืด 2026-11-17 "ระบบสมองเพิ่มภาพ และ youtube ถ้าเกี่ยวข้องให้เปิดมาด้วย"): the lines are
+# the brain's own, as read_note howto-buy-pr-po gave them 2026-11-17, plus a title with " | ", a short link and an http picture
+NOTE_WITH_MEDIA = ("# ใบสั่งซื้อ\nslug: howto-buy-pr-po | folder: howto\nเนื้อหา\n"
+                   "youtube_videos: EP.3 สั่งซื้อ (PO) | รับของ -> https://www.youtube.com/watch?v=74csOGLdjJk&list=PLO9P7tPZLXB0 "
+                   "(thumbnail: https://i.ytimg.com/vi/74csOGLdjJk/hqdefault.jpg) | EP.4 -> https://youtu.be/abcdefghijk\n"
+                   "images: ฟอร์มใบสั่งซื้อ -> https://bcaccount.com/manual/images/06-purchase-order-new-form.png | ไม่ปลอดภัย -> http://x.test/a.png\n"
+                   "web_pages: คู่มือ -> https://bcaccount.com/manual\n")
+note_pics = va.note_media(NOTE_WITH_MEDIA)
+assert [(m["kind"], m.get("id"), m["title"]) for m in note_pics] == [
+    ("youtube", "74csOGLdjJk", "EP.3 สั่งซื้อ (PO) | รับของ"), ("youtube", "abcdefghijk", "EP.4"), ("image", None, "ฟอร์มใบสั่งซื้อ")], note_pics
+assert note_pics[2]["url"].endswith("/06-purchase-order-new-form.png") and va.note_media("# ก\nเนื้อหา ไม่มีภาพ") == []
+
+
+class FakeBrain:  # read_note, find_media and search_brain as the brain answers them
+    def call(self, name, args):
+        if name == "read_note":
+            return NOTE_WITH_MEDIA
+        if name == "search_brain":  # the note about the query scores high, the same note for any other query low
+            return json.dumps([{"slug": "howto-buy-pr-po", "score": 109 if args["query"] == "ใบสั่งซื้อ" else 30}])
+        return json.dumps({"count": 4, "items": [] if args["query"] == "ไม่มี" else [
+            {"kind": "youtube", "title": "EP.3", "url": "https://www.youtube.com/watch?v=74csOGLdjJk", "noteSlug": "howto-buy-pr-po"},
+            {"kind": "webpage", "title": "คู่มือ", "url": "https://bcaccount.com/manual", "noteSlug": "howto-buy-pr-po"},
+            {"kind": "youtube", "title": "ทั้งเพลย์ลิสต์ ไม่มีรหัสวิดีโอ", "url": "https://www.youtube.com/playlist?list=PLO9P7tPZLXB0", "noteSlug": "howto-buy-pr-po"},
+            {"kind": "youtube", "title": "เรื่องอื่น", "url": "https://www.youtube.com/watch?v=abcdefghijk", "noteSlug": "howto-stock-overview"}]})
+
+
+m_cards, m_text = va.mcp_tool("bcbrain", FakeBrain(), "read_note")(slug="howto-buy-pr-po")
+assert m_cards[0]["media"] == note_pics and m_text == NOTE_WITH_MEDIA  # the card carries them; the boss still gets the whole note
+m_cards, m_text = va.mcp_tool("bcbrain", FakeBrain(), "find_media")(query="ใบสั่งซื้อ")
+assert [m["id"] for m in m_cards[0]["media"]] == ["74csOGLdjJk"] and m_cards[0]["title"] == "ภาพและวิดีโอ: ใบสั่งซื้อ", m_cards
+assert "เรื่องอื่น" not in m_text and json.loads(m_text)["count"] == 3, m_text  # the boss is told only what matches too
+assert va.mcp_tool("bcbrain", FakeBrain(), "find_media")(query="ไม่มี")[0] == []  # nothing found: no empty card
+# the brain gives media for any query (no score cut): a query its own search scores low shows nothing and says so
+m_cards, m_text = va.mcp_tool("bcbrain", FakeBrain(), "find_media")(query="ต้มยำกุ้ง")
+assert m_cards == [] and "ไม่พบ" in m_text, (m_cards, m_text)
 
 C.DOCS_DIR = tempfile.mkdtemp()
 C.SESSIONS_DIR = tempfile.mkdtemp()  # the call's session file goes here, not into sessions/

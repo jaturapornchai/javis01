@@ -3,7 +3,7 @@
 Browser (static/index.html: mic over WebRTC, SVG status ring)
     -> FastRTC (Silero VAD pause detection, barge-in) -> OpenThai 2.0 ASR Streaming (CPU ONNX STT)
     -> DeepSeek streaming + tools (web, docs, bcbrain MCP)
-    -> spoken summary -> F5-TTS-THAI (local human voice) -> speaker;   details after [จอ] -> on-screen panel
+    -> spoken summary -> OmniVoice Thai (local, cloned voice) -> speaker;   details after [จอ] -> on-screen panel
 
 Run: python voice_agent.py   then open http://127.0.0.1:7860
 """
@@ -36,7 +36,6 @@ import httpx
 import librosa
 import numpy as np
 import ollama
-import soundfile as sf
 import uvicorn
 from ddgs import DDGS
 import torch
@@ -45,13 +44,14 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastrtc import AdditionalOutputs, ReplyOnPause, SileroVadOptions, Stream, audio_to_float32, get_current_context
 from faster_whisper.vad import VadOptions, get_speech_timestamps
 from fastrtc.utils import create_message
-from huggingface_hub import hf_hub_download
 from pypdf import PdfReader
 from pythainlp.util import num_to_thaiword
+from scipy.ndimage import maximum_filter1d, uniform_filter1d
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"f5_tts_th.*")
-from f5_tts_th.normalize import normalize_text  # noqa: E402
-from f5_tts_th.utils_infer import chunk_text, infer_batch_process, load_model as load_f5_model, load_vocoder  # noqa: E402
+from f5_tts_th.normalize import normalize_text  # noqa: E402  (digits and signs to Thai words: the one part of f5_tts_th still used)
+from omnivoice import OmniVoice  # noqa: E402
+from omnivoice.models.omnivoice import OmniVoiceGenerationConfig  # noqa: E402
 
 import config as C  # noqa: E402
 import desktop_agent  # noqa: E402
@@ -314,8 +314,9 @@ _LETTER_TH = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", (
 
 
 def _thai_pronounce(text):
-    """Write English terms in Thai spelling and spell short acronyms out by letter. F5-TTS-THAI does read English
-    text, but badly: the words in _THAI_TERMS came back wrong as written and right in Thai spelling (Whisper read-back)."""
+    """Write English terms in Thai spelling and spell short acronyms out by letter. Measured on F5-TTS-THAI, the voice
+    before 2026-11-17: the words in _THAI_TERMS came back wrong as written and right in Thai spelling (Whisper read-back).
+    ponytail: not measured again on OmniVoice; Thai spelling is what its Thai training data looks like."""
     # the prompts and the boss spell Account "แอคเคาท์": the greeting came back "BCAX เข้าครับ"; with "แอคเคานต์" it came back right
     out = _TERM_RE.sub(lambda m: _TERM_MAP[m.group(1).lower()], str(text).replace("แอคเคาท์", "แอคเคานต์"))
     out = re.sub(r"(?<![A-Za-z0-9])[A-Z]{2,5}(?![A-Za-z0-9])",
@@ -323,59 +324,80 @@ def _thai_pronounce(text):
     return re.sub(r"\s+", " ", out).strip()
 
 
-def _hf_file(repo, filename):
-    try:
-        return hf_hub_download(repo, filename, local_files_only=True)
-    except Exception:
-        return hf_hub_download(repo, filename)
+def _digits(digits):
+    return "".join(num_to_thaiword(int(d)) for d in digits)
+
+
+def _number_words(m):
+    whole, frac = m.group(1).replace(",", ""), (m.group(2) or "").rstrip("0") and m.group(2)
+    # a leading zero, or ten digits and more, is a code and not an amount: said one digit at a time
+    coded = "," not in m.group(1) and (len(whole) > 9 or (whole[0] == "0" and len(whole) > 2))
+    words = _digits(whole) if coded else num_to_thaiword(int(whole))
+    return f" {words}{'จุด' + _digits(frac) if frac else ''}{'เปอร์เซ็นต์' if m.group(3) else ''} "
+
+
+_NUMBER_RE = re.compile(r"(?<!\d)(?<!\d\.)(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\d|\.\d)(\s?%)?")
+
+
+def _say_numbers(text):
+    """Digits to Thai words before the voice's own normalizer gets them. Measured 2026-11-17: f5_tts_th's normalize_text
+    drops the signs first and reads what is left, so "87.50 บาท" came out as แปดพันเจ็ดร้อยห้าสิบ บาท, "7%" as เจ็ด, "3-5 วัน" as
+    สามสิบห้า วัน, "10:30 น." as หนึ่งพันสามสิบ, "081-234-5678" without its ศูนย์, and 31 as สามสิบหนึ่ง.
+    ponytail: satang are read as digits after จุด (87.50 is not "บาท ... สตางค์"), a date written 17/11/2569 as three numbers."""
+    out = re.sub(r"(?<![\d.,-])0\d{1,2}(?:-\d{3,4}){1,2}(?![\d-])",  # a phone number, group by group
+                 lambda m: " " + " ".join(_digits(g) for g in m.group(0).split("-")) + " ", str(text))
+    out = re.sub(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)(?: ?น\.)?",  # 10:30 น.
+                 lambda m: f" {num_to_thaiword(int(m.group(1)))}นาฬิกา{num_to_thaiword(int(m.group(2))) + 'นาที' if int(m.group(2)) else ''} ", out)
+    out = re.sub(r"(?<![\d-])([1-9][\d,.]*) ?- ?([1-9][\d,.]*)(?![\d-])", r"\1 ถึง \2", out)  # 3-5 วัน
+    return _NUMBER_RE.sub(_number_words, out)
 
 
 def load_tts():
-    """F5-TTS-THAI v1 + Vocos + preloaded human reference voice tensor kept warm on device."""
-    f5_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, text_mask_padding=False, conv_layers=4, pe_attn_head=1)
-    model = load_f5_model(f5_cfg, _hf_file(C.TTS_MODEL, "model_1000000.pt"), mel_spec_type="vocos",
-                          vocab_file=_hf_file(C.TTS_MODEL, "vocab.txt"), device=C.DEVICE)
-    vocoder = load_vocoder("vocos", device=C.DEVICE)
-    ref_np, sr = sf.read(C.REF_AUDIO_PATH, dtype="float32")
-    if ref_np.ndim > 1:
-        ref_np = np.mean(ref_np, axis=1, dtype=np.float32)
-    if sr != C.TTS_SAMPLE_RATE:
-        ref_np = librosa.resample(ref_np, orig_sr=sr, target_sr=C.TTS_SAMPLE_RATE)
-    ref_np = np.concatenate([ref_np, np.zeros(int(C.REF_TAIL_SILENCE_S * C.TTS_SAMPLE_RATE), np.float32)])  # why: see config.py
-    ref_tensor = torch.from_numpy(np.asarray(ref_np, dtype=np.float32)).reshape(1, -1)
-    ref_text = C.REF_TEXT.strip()
-    if not ref_text.endswith((". ", "。")):
-        ref_text += " " if ref_text.endswith(".") else ". "
-    return model, vocoder, ref_tensor, ref_text
+    """OmniVoice (the Thai fine-tune) plus the reference voice, encoded once instead of on every phrase."""
+    kw = dict(device_map="cuda:0" if C.HAS_CUDA else "cpu", dtype=torch.float16 if C.HAS_CUDA else torch.float32)
+    try:
+        model = OmniVoice.from_pretrained(C.TTS_MODEL, local_files_only=True, **kw)  # no network at start once it is cached
+    except Exception:
+        model = OmniVoice.from_pretrained(C.TTS_MODEL, **kw)
+    assert model.sampling_rate == C.TTS_SAMPLE_RATE, model.sampling_rate
+    return model, model.create_voice_clone_prompt(ref_audio=C.REF_AUDIO_PATH, ref_text=C.REF_TEXT)
 
 
 TTS_LOCK = threading.Lock()  # ponytail: one TTS phrase at a time for every caller; a second model if callers queue
 
 
+def level(arr):
+    """ลุงจืด 2026-11-17 "ตอนนี้เสียงไม่ค่อยดัง": the voice's phrases came out between -23 and -17 dBFS, each at its own
+    loudness. Every phrase goes to C.TTS_RMS; where that lifts a peak past 0.95 the gain eases down around the peak
+    (a limiter over 20 ms each side), nothing is clipped."""
+    rms = float(np.sqrt(np.mean(arr ** 2))) if arr.size else 0.0
+    if rms < 1e-4:
+        return arr
+    arr = arr * (C.TTS_RMS / rms)
+    win = 2 * int(0.02 * C.TTS_SAMPLE_RATE) + 1  # odd: the same reach on both sides of a peak
+    gain = np.minimum(1.0, 0.95 / np.maximum(maximum_filter1d(np.abs(arr), win), 1e-6))
+    return (arr * uniform_filter1d(gain, win)).astype(np.float32)
+
+
 def speak(text):
-    model, vocoder, ref_tensor, ref_text = tts
-    norm = normalize_text(_thai_pronounce(text)).strip()
+    model, voice = tts
+    norm = normalize_text(_thai_pronounce(_say_numbers(text))).strip()
     if not norm:
         return np.zeros((1, C.TTS_SAMPLE_RATE // 10), np.float32)
-    batches = [b for b in chunk_text(norm, max_chars=120) if b.strip()] or [norm]
-    for _ in range(2):
-        with TTS_LOCK, torch.inference_mode():
-            wav, _, _ = next(infer_batch_process(
-                (ref_tensor, C.TTS_SAMPLE_RATE), ref_text, batches, model, vocoder,
-                mel_spec_type="vocos", progress=None, nfe_step=C.TTS_STEP, cfg_strength=C.TTS_CFG,
-                sway_sampling_coef=-1.0, speed=C.TTS_SPEED, device=C.DEVICE, use_ipa=False,
-            ))
+    # a lone short word ("ครับ") now and then comes out all silence (OmniVoice: 3 of 20 tries, 2026-11-04): the caller hears
+    # nothing and PyAV's resampler fails on the empty frame. Ceiling: 3 tries, then 0.1 s of quiet
+    for _ in range(3):
+        with TTS_LOCK:
+            wav = model.generate(text=norm, language="th", voice_clone_prompt=voice, speed=C.TTS_SPEED,
+                                 generation_config=OmniVoiceGenerationConfig(num_step=C.TTS_STEP, guidance_scale=C.TTS_CFG))[0]
         arr = np.asarray(wav, dtype=np.float32).reshape(-1) if wav is not None else np.zeros(0, np.float32)
         if arr.size:
             _, idx = librosa.effects.trim(arr, top_db=40)
             if idx[1] > idx[0]:
                 pad_pre, pad_post = int(0.03 * C.TTS_SAMPLE_RATE), int(0.05 * C.TTS_SAMPLE_RATE)
                 arr = arr[max(0, int(idx[0]) - pad_pre):min(arr.size, int(idx[1]) + pad_post)]
-            peak = float(np.max(np.abs(arr))) if arr.size else 0.0
-            if peak > 0.98:
-                arr = arr * (0.95 / peak)
             if arr.size:
-                return arr.reshape(1, -1)
+                return level(arr).reshape(1, -1)
     return np.zeros((1, C.TTS_SAMPLE_RATE // 10), np.float32)
 
 
@@ -670,6 +692,45 @@ def brain_hits(server, text):
 
 
 NOTE_META = re.compile(r"(?m)^(slug|sources):.*\n?")  # a BC note's metadata lines: its slug and the code paths it came from
+# ลุงจืด 2026-11-17 "ระบบสมองเพิ่มภาพ และ youtube ถ้าเกี่ยวข้องให้เปิดมาด้วย": the brain ends a note with the videos and
+# pictures that note has, "youtube_videos: title -> url (thumbnail: url) | title -> url" and "images: alt -> url | ..."
+MEDIA_LINE = re.compile(r"(?m)^(youtube_videos|images): (.+)$")
+MEDIA_ITEM = re.compile(r"(?:^| \| )(.+?) -> (\S+)(?: \(thumbnail: \S+\))?(?= \| |$)")  # a title may hold " | " itself
+YT_ID = re.compile(r"(?:[?&]v=|youtu\.be/|/embed/)([\w-]{11})(?![\w-])")
+
+
+def media_item(kind, title, url):
+    """One picture or YouTube video the page shows under an answer, or None for anything else."""
+    vid = YT_ID.search(url) if kind == "youtube" else None
+    if kind not in ("youtube", "image") or not url.startswith("https://") or len(url) > 300 or (kind == "youtube" and not vid):
+        return None  # ponytail: any https picture the brain names is shown (its own allow-list: bcaccount.com); a video plays by id
+    return {"kind": kind, "title": title.strip()[:120], "url": url, **({"id": vid[1]} if vid else {})}
+
+
+def note_media(text):
+    """The videos and pictures the brain lists for a note it returned, in the brain's order."""
+    found = (media_item("youtube" if kind == "youtube_videos" else "image", title, url)
+             for kind, line in MEDIA_LINE.findall(text) for title, url in MEDIA_ITEM.findall(line.strip()))
+    return [m for m in found if m]
+
+
+def brain_media(server, client, query, found):
+    """find_media JSON -> one card of the pictures and videos of notes that really match the query, none otherwise."""
+    # ponytail: the brain's find_media has no score cut (measured 2026-11-17: a nonsense query still got 6 items, all from
+    # notes scoring under 30 or their neighbours), so an item counts only when search_brain scores its own note as relevant
+    # for the same query. Costs one more brain call; a hub note that matches brings all its videos. Upgrade: a score per
+    # item from the brain.
+    try:
+        hits = json.loads(client.call("search_brain", {"query": query})) if query else []
+    except ValueError:
+        hits = []
+    strong = {h.get("slug") for h in hits if isinstance(h, dict) and h.get("score", 0) >= C.BRAIN_MIN_SCORE}
+    items = [it for it in found.get("items", []) if isinstance(it, dict) and it.get("noteSlug") in strong]
+    if not items:
+        return [], "ไม่พบภาพหรือวิดีโอที่ตรงกับเรื่องนี้"
+    media = [m for it in items if (m := media_item(it.get("kind"), str(it.get("title", "")), str(it.get("url", ""))))]
+    card = {"source": server, "title": f"ภาพและวิดีโอ: {query}", "snippet": " · ".join(m["title"] for m in media)[:300], "url": None, "media": media}
+    return ([card] if media else []), json.dumps({**found, "count": len(items), "items": items}, ensure_ascii=False)
 
 
 def mcp_tool(server, client, name):
@@ -679,7 +740,9 @@ def mcp_tool(server, client, name):
             return brain_hits(server, text)
         if name == "read_note":  # a card the page opens in full: the note's own heading, its text without the metadata
             body = NOTE_META.sub("", text).partition("\n")[2].strip()
-            return [{"source": server, "title": text.partition("\n")[0].lstrip("# "), "snippet": body[:300], "url": None, "slug": args.get("slug")}], text
+            return [{"source": server, "title": text.partition("\n")[0].lstrip("# "), "snippet": body[:300], "url": None, "slug": args.get("slug"), "media": note_media(text)}], text
+        if name == "find_media" and text.lstrip().startswith("{"):
+            return brain_media(server, client, str(args.get("query", "")).strip(), json.loads(text))
         return [{"source": server, "title": f"{name}: {next(iter(args.values()), '')}", "snippet": text[:400], "url": None}], text
     return run
 
@@ -1035,6 +1098,9 @@ SCREEN_ONLY = "รายละเอียดผมแสดงไว้บน�
 # slips past until it is added here
 STALL = re.compile(r"(ขอ|เดี๋ยว)(ผม)?(ให้(ลูก)?ทีม)?(อ่าน|เปิด|ค้น|ดู|เช็ก|ตรวจ)")
 STALL_NUDGE = "(ระบบ: คุณบอกว่าจะอ่านหรือค้นเพิ่ม แต่ยังไม่ได้สั่งลูกทีม ให้เรียกเครื่องมือตอนนี้เลย หรือตอบจากผลที่ลูกทีมค้นให้แล้ว ห้ามบอกว่าจะอ่านอีก)"
+LEAD_PROMISE = re.compile(r"ติดต่อกลับ|ประสาน|ส่งเรื่อง|ฝากเรื่อง")  # the boss telling a customer the message will be passed on
+LEAD_NUDGE = ("(ระบบ: ลูกค้าบอกเบอร์โทรแล้ว และคุณรับปากว่าจะให้ติดต่อกลับ แต่ยังไม่ได้เรียก leave_message ข้อความฝากยังไม่ถูกบันทึก "
+              "ให้เรียก leave_message ตอนนี้ด้วยชื่อและเบอร์ที่ลูกค้าพูด ถ้าลูกค้ายังไม่ได้บอกชื่อให้ถามชื่อ ไม่ต้องเล่าเรื่องอื่น)")
 LAST_ROUND = {"role": "user", "content": "(ระบบ: ค้นครบแล้ว ไม่มีเครื่องมือให้เรียกอีก ตอบผู้โทรจากผลที่ลูกทีมค้นให้แล้วตอนนี้เลย "
                                          "ถ้าไม่มีส่วนที่ตรง ให้บอกสั้นๆ ว่ายังไม่มีข้อมูลเรื่องนี้)"}
 def plain_turn(messages):
@@ -1441,6 +1507,18 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
             if not calls and rnd < C.MAX_TOOL_ROUNDS and not turn.get("nudged") and STALL.search(" ".join(said[said_before:])):
                 turn["nudged"] = True  # once: a second bare promise just ends the turn
                 messages += [{"role": "assistant", "content": " ".join(said[said_before:])}, {"role": "user", "content": STALL_NUDGE}]
+                continue
+            # 2026-11-17: with a prompt that lets the boss explain longer, the callback call lost the caller's number
+            # 3 times in 14 replays (0 in 14 before): the boss took the number, promised a call back and told the
+            # prefetched notes instead of calling leave_message (the 2026-11-11 08:30 miss again). A number heard, a
+            # promise said and no leave_message this turn: told once to store it.
+            # ponytail: words, not meaning; a promise in other words ends the turn unsaved as before
+            if (not calls and rnd < C.MAX_TOOL_ROUNDS and not turn.get("lead_nudged") and "leave_message" in tools
+                    and 9 <= len(spoken_digits(heard)) <= 15 and LEAD_PROMISE.search(" ".join(said))
+                    and not any(c["function"]["name"] == "leave_message" for m in messages for c in m.get("tool_calls", ()))):
+                turn["lead_nudged"] = True
+                log.info("lead nudge: a number heard and a call back promised, leave_message not called")
+                messages += [{"role": "assistant", "content": " ".join(said[said_before:])}, {"role": "user", "content": LEAD_NUDGE}]
                 continue
             # ลุงจืด 2026-11-17 "ถามเรื่องทั่วไป ก็ต้องตอบได้": 38 of 960 turns (log 2026-11-14..17) ended on a fallback line
             # with every spoken sentence cut, and the boss asked general_knowledge in 7. When nothing it said stood,
