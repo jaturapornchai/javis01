@@ -1265,15 +1265,22 @@ def swarm_queries(query, heard, history):
     return [" ".join([raw, *grounding.acronyms(raw)]).strip()[:150]]
 
 
+def words_ask(history, heard):
+    """(the talk so far, the messages) of search_words: built in one place, so an ask made early is the very same one."""
+    talk = [f"{'ผู้โทร' if m['role'] == 'user' else 'เลขา'}: {m['content'].partition(C.SCREEN_MARK)[0].strip()[:150]}"
+            for m in history[-4:] if m["content"] and not m["content"].startswith(("(", C.SILENT_MARK))]
+    return talk, [{"role": "system", "content": SEARCH_ASK},
+                  {"role": "user", "content": "\n".join([*talk, f"ผู้โทร (ล่าสุด): {heard}"])}]
+
+
 def search_words(history, heard):
     """The caller's words made into a search: misheard words fixed, Thai and English terms, a follow-up made whole.
     Returns (words, jump): jump is (the topic so far, the new one heard) when the words leave the topic unasked.
     ponytail: one more DeepSeek call before the first word; "" on failure, and the raw words are searched"""
-    talk = [f"{'ผู้โทร' if m['role'] == 'user' else 'เลขา'}: {m['content'].partition(C.SCREEN_MARK)[0].strip()[:150]}"
-            for m in history[-4:] if m["content"] and not m["content"].startswith(("(", C.SILENT_MARK))]
+    talk, ask = words_ask(history, heard)
     try:
-        text, _ = worker_chat([{"role": "system", "content": SEARCH_ASK},
-                               {"role": "user", "content": "\n".join([*talk, f"ผู้โทร (ล่าสุด): {heard}"])}], None)
+        early = WORDS.pop(ask[1]["content"], None)  # words_early asked this already, in the silence before the turn ended
+        text, _ = early.result() if early else worker_chat(ask, None)
     except (httpx.HTTPError, ValueError, KeyError) as e:
         log.warning("search words failed (%s)", type(e).__name__)
         return "", None
@@ -1286,6 +1293,38 @@ def search_words(history, heard):
     # a first question has no topic to leave
     jump = tuple(jump) if len(jump) == 2 and all(jump) and any(t.startswith("ผู้โทร:") for t in talk) else None
     return " ".join(first.split())[:200], jump
+
+
+# ลุงจืด 2026-11-18 "หาวิธีให้ตอบเร็ว แต่คุณภาพในคำตอบสูง": a searched turn waited PAUSE_SILENCE_S for the turn to end and
+# only then asked for its search words (0.81 s median before the first search, log 2026-11-16..17). The early
+# transcription is done 0.5-0.8 s after the last word and the turn ends at 1.0, so the very same ask goes out then and
+# search_words takes its answer (4 real-time runs: the words came 0.23-0.49 s sooner); nothing else is done early, and
+# the boss gets what it got before. The live transcript (same model, same audio) often reads the whole speech before
+# that transcription is done: determine_pause asks with it then; the same words are the same ask, other words are one
+# unused ask (18 real-time runs on the test audio: the ask search_words took went out 0.71 s after the last word at
+# the median, 0.91 s before the two changes of determine_pause).
+# ponytail: only while the secretary is silent (a speech is a turn then, and its words go to DeepSeek anyway), so a
+# caller who cuts in gains nothing; a caller who stops and goes on costs one unused ask per stop
+WORDS = {}  # the caller part of an ask made early -> its DeepSeek job
+WORDS_POOL = ThreadPoolExecutor(8)
+
+
+def words_early(heard, history):
+    """Asks for a speech's search words before its turn ends, unless these words make no searched turn."""
+    bare = re.sub(r"[\s.,!?…]+", "", heard)
+    if not bare or bare in BargeInReplyOnPause.HESITATIONS or FAST_CHAT.match(heard.strip()):
+        return
+    ask = words_ask(history, heard)[1]
+    if ask[1]["content"] not in WORDS:  # the same words again (the speech end moved a little): that ask is on its way
+        WORDS[ask[1]["content"]] = WORDS_POOL.submit(worker_chat, ask, None)
+    for old in list(WORDS)[:-8]:  # asks nobody took: the caller went on talking
+        WORDS.pop(old, None)
+
+
+def words_transcribed(job, history):
+    """Done-callback of an early transcription."""
+    if not job.cancelled() and not job.exception():
+        words_early(job.result(), history)
 
 
 def load_workers():
@@ -1736,9 +1775,10 @@ class BargeInReplyOnPause(ReplyOnPause):
             spoken = " ".join(t for s, e, t in self.playing if e + 0.5 > now_m - turn_s and s < now_m)
             if spoken and grounding.is_echo(txt, spoken):
                 return
-            if live and txt != live["text"]:
-                live["text"] = txt
-                self.send_message_sync(json.dumps({"type": "partial", "data": txt}, ensure_ascii=False))
+            if live:  # seen: the speech up to there reads as text (determine_pause asks for its search words)
+                new, live["text"], live["seen"] = txt != live["text"], txt, live.get("fed", 0)
+                if new:
+                    self.send_message_sync(json.dumps({"type": "partial", "data": txt}, ensure_ascii=False))
         except Exception:
             pass
         finally:
@@ -1771,13 +1811,17 @@ class BargeInReplyOnPause(ReplyOnPause):
                                           "stream": stt.stream() if hasattr(stt, "stream") else None})
         now_m = time.monotonic()
         min_new = int(sampling_rate * C.LIVE_STEP_S)
-        if (silence < C.PAUSE_SILENCE_S and not live["busy"]
+        early = EARLY.get(id(self))
+        # the model takes one job at a time (OpenThaiASR._lock): live steps in the silence after the speech held up the
+        # early transcription, the one job the answer waits for (done 0.91 s after the last word, 0.76 s without them;
+        # medians of 14 and 18 real-time runs on the test audio). None starts from EARLY_STT_SILENCE_S until it is done.
+        # ponytail: the karaoke line gets the last words of a speech up to that much later
+        if ((silence < C.EARLY_STT_SILENCE_S or early and early[1].done() and silence < C.PAUSE_SILENCE_S) and not live["busy"]
                 and now_m - live["t"] >= C.LIVE_STEP_S and state.stream.size - live.get("fed", 0) >= min_new):
             fed = live.get("fed", 0)
             delta = state.stream[fed:].copy() if live.get("stream") is not None else state.stream[-15 * sampling_rate:].copy()
             live["busy"], live["t"], live["fed"] = True, now_m, state.stream.size
             EARLY_STT.submit(self.live_words, sampling_rate, delta, state)
-        early = EARLY.get(id(self))
         # speech past what was transcribed early makes it out of date; a speech end the sliding VAD merely moves a
         # little (through Opus it does) inside the transcribed audio does not. No speech in the window: the speech
         # end did not move, `silence` is just capped at the window. Without `chunks` every 0.9 s of quiet counted as
@@ -1786,8 +1830,17 @@ class BargeInReplyOnPause(ReplyOnPause):
         if early and chunks and state.stream.size - silence * sampling_rate > early[0].size:
             EARLY.pop(id(self), None)[1].cancel()  # still queued: it never runs
             early = None
-        if not early and silence >= C.EARLY_STT_SILENCE_S:
-            EARLY[id(self)] = (state.stream, EARLY_STT.submit(transcribe, (sampling_rate, state.stream)))
+        fresh = not early and silence >= C.EARLY_STT_SILENCE_S
+        if fresh:
+            early = EARLY[id(self)] = (state.stream, EARLY_STT.submit(transcribe, (sampling_rate, state.stream)))
+        # the secretary neither thinks nor had a phrase on the caller's speaker during this speech (as just_filler counts it)
+        if early and not state.responding and not any(e + 0.5 > now_m - state.stream.size / sampling_rate for _, e, _ in self.playing):
+            history = session(self.fn is reply_public)[1]
+            if fresh:
+                early[1].add_done_callback(lambda job: words_transcribed(job, history))
+            # the live transcript reads the whole speech and the transcription is not done: ask with its words now
+            if not early[1].done() and live.get("seen", 0) >= state.stream.size - silence * sampling_rate:
+                words_early(live["text"], history)
         return silence >= C.PAUSE_SILENCE_S
 
     def process_audio(self, audio, state):

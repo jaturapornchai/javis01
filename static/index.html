@@ -538,7 +538,7 @@ function onEvent(ev) {
   } else if (ev.kind === "panel") {
     showPanel(String(ev.text ?? ""));
   } else if (ev.kind === "done") {
-    statusText = ""; botLi = null;
+    statusText = ""; botLi = null; showMedia();
     const waitMs = Math.max(0, botPlayEnd - performance.now());
     if (waitMs > 40) setTimeout(() => { if (state === "speaking") { setState("idle"); $("remote").volume = 1; } }, waitMs);
     else { setState("idle"); $("remote").volume = 1; } // a turn with nothing said leaves it turned down
@@ -655,11 +655,15 @@ function addCard(card) {
   }
 }
 /* pictures and YouTube of the notes behind an answer (ลุงจืด 2026-11-17 "ระบบสมองเพิ่มภาพ และ youtube ถ้าเกี่ยวข้องให้เปิดมาด้วย") */
-function addMedia(media) { // a card's pictures and videos go under this turn's answer, each once
-  const n = panelMedia.length;
+function addMedia(media) { // a card's pictures and videos are kept for this turn's answer, each once
   for (const m of Array.isArray(media) ? media : []) // ponytail: the first 6 of a turn, as the cards arrive
     if (panelMedia.length < 6 && m && !panelMedia.some((x) => x.url === m.url)) panelMedia.push(m);
-  if (panelMedia.length === n) return;
+}
+// ลุงจืด 2026-11-18 "ภาพและ video ให้แสดงหลังจากแสดงข้อความคำตอบเสร็จแล้ว": the cards come before the first word, so their
+// pictures wait for the turn's "done" (all the answer's text is on the page) and are not loaded before it either.
+// ponytail: a turn cut off before "done" shows them only when it is opened again from the history
+function showMedia() {
+  if (!panelMedia.length || mediaNode) return;
   mediaNode = mediaBlock(panelMedia);
   if (!nav.length && viewingSaved < 0) panelBlocks = renderMd($("pbody"), panelText, panelBlocks, mediaNode);
 }

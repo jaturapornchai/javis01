@@ -166,6 +166,31 @@ va.worker_chat = lambda messages, tools: ("เปลี่ยนเรื่อ�
 assert va.search_words(talk, "รถอัตโนมัติ") == ("LOT อัตโนมัติ", ("LOT FIFO", "ระบบรถยนต์"))
 va.worker_chat = lambda messages, tools: ("ได้เลยครับ เดี๋ยวผมค้นให้นะครับ.", [])
 assert va.search_words(talk, "ตารางไฟโฟ") == ("", None)
+# the ask made in the silence before a turn ends is the one search_words takes: asked once, taken once, and only for
+# the same words after the same talk; a hesitation, a bare hello, no words or a failed transcription asks nothing
+from concurrent.futures import Future
+def heard_early(words, history):
+    job = Future()
+    job.set_exception(words) if isinstance(words, Exception) else job.set_result(words)
+    va.words_transcribed(job, history)
+asked, last_chat = [], va.worker_chat
+va.worker_chat = lambda messages, tools: (asked.append(messages[1]["content"]), ("FIFO ตาราง", []))[1]
+va.words_early("ตารางไฟโฟ", talk)  # the live transcript read the whole speech first
+heard_early("ตารางไฟโฟ", talk)  # the transcription heard the same words: the ask on its way stays, no second one
+assert va.search_words(talk, "ตารางไฟโฟ") == ("FIFO ตาราง", None) and len(asked) == 1 and not va.WORDS, asked
+assert asked[0].endswith("ผู้โทร (ล่าสุด): ตารางไฟโฟ") and va.search_words(talk, "ตารางไฟโฟ")[0] and len(asked) == 2
+heard_early("ตารางไฟโฟ", talk)
+assert va.search_words([], "ตารางไฟโฟ")[0] and va.search_words(talk, "ตารางไฟโฟครับ")[0] and len(va.WORDS) == 1
+va.WORDS.popitem()[1].result()
+assert len(asked) == 5, asked
+for words in ("เอ่อ", "เสียงดนตรี", "สวัสดีครับ", " ", RuntimeError("stt")):
+    heard_early(words, talk)
+assert len(asked) == 5 and not va.WORDS, (asked, list(va.WORDS))
+for k in range(10):  # asks nobody took do not pile up
+    heard_early(f"คำถามที่ {k}", talk)
+assert len(va.WORDS) == 8 and all(job.result() for job in va.WORDS.values())
+va.WORDS.clear()
+va.worker_chat = last_chat
 import numpy as np
 def no_boss(*a, **k):
     raise AssertionError("the topic ask called the boss")
@@ -493,11 +518,20 @@ def until_pause(*parts):
     raise AssertionError("no pause")
 
 
+asks, real_chat = [], va.worker_chat
+va.worker_chat = lambda messages, tools: (asks.append(messages), ("", []))[1]
 pause_after = until_pause(speech)
 print(f"endpointing: pause {pause_after:.2f}s after the speech, turn audio {h.state.stream.size / 48000:.1f}s")
 assert pause_after <= C.PAUSE_SILENCE_S + 0.2, pause_after
 assert h.state.stream.size <= 4.2 * 48000, "the turn starts at most a second before the first word"
 assert id(h) in va.EARLY, "no early transcription started before the turn ended"
+# the secretary silent: that transcription's words were asked for their search words before the turn ended
+early_text = va.EARLY[id(h)][1].result()
+deadline = time.monotonic() + 3
+said_early = lambda: [m for m in asks if m[1]["content"].endswith(f"ผู้โทร (ล่าสุด): {early_text}")]
+while not said_early() and time.monotonic() < deadline:  # asked by the transcription's done-callback, on a pool thread
+    time.sleep(0.02)
+assert len(said_early()) == 1 and va.WORDS, "the early transcription did not ask for the turn's search words"
 # the reply is busy and nobody takes the turn yet: quiet must not re-run the STT (it did every 0.9 s on the whole,
 # growing turn: 36 s of audio once a second, 20 s before a caller's words came out)
 head = va.EARLY[id(h)][0].size
@@ -508,7 +542,31 @@ assert va.early_words(h.state.stream) == va.transcribe((48000, h.state.stream)) 
 until_pause(speech, np.zeros(int(0.3 * 48000), np.int16), speech)  # a pause mid-turn starts one, then more words
 assert len(early) == 2, (early, h.state.stream.size / 48000)
 assert va.early_words(h.state.stream) == va.transcribe((48000, h.state.stream)), "early words missed the speech after them"
+# the model takes one job at a time: while the early transcription is at work no live step starts, and once the live
+# transcript reads the whole speech its words are asked for at once
+gate, real_stt, real_live, steps = threading.Event(), va.stt.transcribe, h.live_words, []
+va.stt.transcribe = lambda x: (gate.wait(10), real_stt(x))[1]  # the early transcription hangs
+h.live_words = lambda *a: (steps.append(1), real_live(*a))[1]
+h.state, said, n = h.state.new(), np.concatenate([hiss * 0, speech, np.zeros(48000, np.int16)]), 0
+while id(h) not in va.EARLY:
+    h.process_audio((48000, said[n : n + 960]), h.state)
+    n += 960
+while va.LIVE[id(h)]["busy"]:
+    time.sleep(0.02)
+va.LIVE[id(h)].update(text="ตารางไฟโฟ", seen=h.state.stream.size)  # as a live step that was fed the whole speech leaves it
+time.sleep(C.LIVE_STEP_S)
+steps.clear()
+for n in range(n, n + 15 * 960, 960):  # 0.3 s more of the silence, on the clock
+    h.process_audio((48000, said[n : n + 960]), h.state)
+    time.sleep(0.02)
+gate.set()
+va.stt.transcribe, h.live_words = real_stt, real_live
+assert not steps, "a live step started while the early transcription was at work"
+assert len([m for m in asks if m[1]["content"].endswith("ผู้โทร (ล่าสุด): ตารางไฟโฟ")]) == 1, "the live transcript's words were not asked for"
+va.EARLY.pop(id(h))[1].result()
 # no headphones: the secretary's own voice back through the mic while it plays is no turn; other words still are
+time.sleep(0.5)
+asked_silent = len(asks)
 h.playing = ((time.monotonic() - 9, time.monotonic() + 60, va.transcribe((48000, speech))),)
 try:
     until_pause(speech)
@@ -518,6 +576,11 @@ except AssertionError:
 h.playing = ((time.monotonic() - 9, time.monotonic() + 60, "ราคาทองวันนี้เท่าไหร่ครับ"),)
 until_pause(speech)
 h.playing = ()
+va.EARLY[id(h)][1].result()
+time.sleep(0.5)
+assert len(asks) == asked_silent, "search words were asked for while the secretary's phrase played"
+va.worker_chat = real_chat
+va.WORDS.clear()
 # words for someone else in the room: the boss answers only SILENT_MARK (live DeepSeek), and that makes no sound
 room = [{"role": "system", "content": C.SYSTEM_PROMPT}, {"role": "user", "content": "คุณต่าย คุณต่าย คุณต่าย"}]
 assert C.SILENT_MARK in "".join(va.llm_tokens(room, [], None)), "the boss answered someone else in the room"
