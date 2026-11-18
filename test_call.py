@@ -175,8 +175,8 @@ def heard_early(words, history):
     va.words_transcribed(job, history)
 asked, last_chat = [], va.worker_chat
 va.worker_chat = lambda messages, tools: (asked.append(messages[1]["content"]), ("FIFO ตาราง", []))[1]
-va.words_early("ตารางไฟโฟ", talk)  # the live transcript read the whole speech first
-heard_early("ตารางไฟโฟ", talk)  # the transcription heard the same words: the ask on its way stays, no second one
+va.words_early("ตารางไฟโฟ", talk)  # an earlier transcription of this speech heard these words
+heard_early("ตารางไฟโฟ", talk)  # its end moved a little, the same words again: the ask on its way stays, no second one
 assert va.search_words(talk, "ตารางไฟโฟ") == ("FIFO ตาราง", None) and len(asked) == 1 and not va.WORDS, asked
 assert asked[0].endswith("ผู้โทร (ล่าสุด): ตารางไฟโฟ") and va.search_words(talk, "ตารางไฟโฟ")[0] and len(asked) == 2
 heard_early("ตารางไฟโฟ", talk)
@@ -292,12 +292,18 @@ assert not h.state.pause_detected and pushed == [False], pushed
 va.PENDING[""]["text"] = ""
 va.voiced = voiced
 # nothing heard (or only Whisper's music caption): the page still gets "done", never stuck on กำลังพูด…
-saved = va.early_words, va.transcribe
+saved = va.early_words, va.transcribe_final
 for early in ("", None):
-    va.early_words, va.transcribe = (lambda data, early=early: early), (lambda audio: "เสียงดนตรี")
+    va.early_words, va.transcribe_final = (lambda data, early=early: early), (lambda audio: "เสียงดนตรี")
     outs = [o.args[0] for o in va.reply((16000, np.zeros(16000)))]
     assert outs == [{"kind": "done"}], outs
-va.early_words, va.transcribe = saved
+va.early_words, va.transcribe_final = saved
+# the GPU model fails (the card is full) or there is no GPU: the CPU model hears that speech and the call goes on
+va.stt = NS(transcribe=lambda data: "ได้ยิน")
+for broken in (NS(transcribe=lambda *a, **k: 1 / 0), None):
+    va.final_stt = broken
+    assert va.transcribe_final((16000, np.zeros(1600, np.int16))) == "ได้ยิน"
+del va.final_stt, va.stt
 # bcbrain down at startup: no prefetch tools, no ThreadPoolExecutor(0); a barge-in does not wait for the workers
 gen = va.dispatch([], [], {}, {})
 try:
@@ -452,8 +458,8 @@ assert "<loc>https://javis.bcsmethai.com/</loc>" in va.SITEMAP_XML and "BC AI Ac
 pron = va._thai_pronounce("ระบบ BC AI Account คิดต้นทุน FIFO, LOT และบัญชี GL")
 assert "บีซี เอไอ แอคเคานต์" in pron and "ไฟโฟ" in pron and "ล็อต" in pron and "จีแอล" in pron, pron
 # pre-voice continuation merge: a mid-thought barge-in before the bot speaks carries the first fragment cleanly
-saved_tr2, carry_inputs = va.transcribe, iter(["อยากถามเรื่อง", "การคิดต้นทุนไฟโฟครับ"])
-va.transcribe = lambda audio: next(carry_inputs)
+saved_tr2, carry_inputs = va.transcribe_final, iter(["อยากถามเรื่อง", "การคิดต้นทุนไฟโฟครับ"])
+va.transcribe_final = lambda audio: next(carry_inputs)
 va.PENDING.pop("", None)
 va.SESSIONS.pop("", None)
 try:
@@ -467,12 +473,14 @@ try:
     assert ev2.args[0] == {"kind": "user", "text": "อยากถามเรื่อง การคิดต้นทุนไฟโฟครับ"}, ev2
     g2.close()
 finally:
-    va.transcribe = saved_tr2
+    va.transcribe_final = saved_tr2
     va.PENDING.pop("", None)
     va.SESSIONS.pop("", None)
 
 # --- models + server ---------------------------------------------------------------------------------------------
-va.stt = va.load_stt()
+va.stt, va.final_stt = va.load_stt(), va.load_final_stt()
+final_calls, real_final = [], va.final_stt.transcribe
+va.final_stt.transcribe = lambda *a, **k: (final_calls.append(1), real_final(*a, **k))[1]
 wav16_ref = librosa.load(C.REF_AUDIO_PATH, sr=16000, mono=True)[0]
 st_ref, partials_ref = va.stt.stream(), set()
 for _pos in range(0, wav16_ref.size, 2560):
@@ -500,6 +508,9 @@ if C.TURN_SECRET:  # coturn use-auth-secret: "<expiry>:javis" + base64 HMAC-SHA1
 speech = (librosa.load(C.REF_AUDIO_PATH, sr=48000)[0][int(1.5 * 48000) : int(3.5 * 48000)] * 32767).astype(np.int16)
 hiss = np.random.default_rng(0).normal(0, 800, 57600).astype(np.int16)
 assert va.stt_hears((48000, speech)) and not va.stt_hears((48000, hiss)) and not va.stt_hears((48000, hiss * 0))
+# Whisper alone heard "สวัสดีครับ" in silence and in hiss: where nobody spoke there are no words
+assert va.transcribe_final((48000, hiss)) == va.transcribe_final((48000, hiss * 0)) == "", "words heard where nobody spoke"
+final_calls.clear()
 va.warm_up()
 # endpointing: the turn ends PAUSE_SILENCE_S (+ one check step) after the last word, its words transcribed already
 h, early = va.make_stream().event_handler, set()  # early: sizes of the audio each early transcription started on
@@ -538,36 +549,15 @@ head = va.EARLY[id(h)][0].size
 for _ in range(150):  # 3 s
     h.process_audio((48000, np.zeros(960, np.int16)), h.state)
 assert va.EARLY[id(h)][0].size == head, "quiet after the turn re-ran the STT"
-assert va.early_words(h.state.stream) == va.transcribe((48000, h.state.stream)) != "" and not va.EARLY
+assert final_calls, "the turn's words did not come from the GPU model"
+assert va.early_words(h.state.stream) == va.transcribe_final((48000, h.state.stream)) != "" and not va.EARLY
 until_pause(speech, np.zeros(int(0.3 * 48000), np.int16), speech)  # a pause mid-turn starts one, then more words
 assert len(early) == 2, (early, h.state.stream.size / 48000)
-assert va.early_words(h.state.stream) == va.transcribe((48000, h.state.stream)), "early words missed the speech after them"
-# the model takes one job at a time: while the early transcription is at work no live step starts, and once the live
-# transcript reads the whole speech its words are asked for at once
-gate, real_stt, real_live, steps = threading.Event(), va.stt.transcribe, h.live_words, []
-va.stt.transcribe = lambda x: (gate.wait(10), real_stt(x))[1]  # the early transcription hangs
-h.live_words = lambda *a: (steps.append(1), real_live(*a))[1]
-h.state, said, n = h.state.new(), np.concatenate([hiss * 0, speech, np.zeros(48000, np.int16)]), 0
-while id(h) not in va.EARLY:
-    h.process_audio((48000, said[n : n + 960]), h.state)
-    n += 960
-while va.LIVE[id(h)]["busy"]:
-    time.sleep(0.02)
-va.LIVE[id(h)].update(text="ตารางไฟโฟ", seen=h.state.stream.size)  # as a live step that was fed the whole speech leaves it
-time.sleep(C.LIVE_STEP_S)
-steps.clear()
-for n in range(n, n + 15 * 960, 960):  # 0.3 s more of the silence, on the clock
-    h.process_audio((48000, said[n : n + 960]), h.state)
-    time.sleep(0.02)
-gate.set()
-va.stt.transcribe, h.live_words = real_stt, real_live
-assert not steps, "a live step started while the early transcription was at work"
-assert len([m for m in asks if m[1]["content"].endswith("ผู้โทร (ล่าสุด): ตารางไฟโฟ")]) == 1, "the live transcript's words were not asked for"
-va.EARLY.pop(id(h))[1].result()
+assert va.early_words(h.state.stream) == va.transcribe_final((48000, h.state.stream)), "early words missed the speech after them"
 # no headphones: the secretary's own voice back through the mic while it plays is no turn; other words still are
 time.sleep(0.5)
 asked_silent = len(asks)
-h.playing = ((time.monotonic() - 9, time.monotonic() + 60, va.transcribe((48000, speech))),)
+h.playing = ((time.monotonic() - 9, time.monotonic() + 60, va.transcribe_final((48000, speech))),)
 try:
     until_pause(speech)
     raise SystemExit("its own voice made a turn")

@@ -1,7 +1,8 @@
 """Local real-time Thai voice assistant (phone-call style secretary).
 
 Browser (static/index.html: mic over WebRTC, SVG status ring)
-    -> FastRTC (Silero VAD pause detection, barge-in) -> OpenThai 2.0 ASR Streaming (CPU ONNX STT)
+    -> FastRTC (Silero VAD pause detection, barge-in)
+    -> Typhoon Whisper Turbo (GPU, the words of a finished speech) + OpenThai 2.0 ASR Streaming (CPU, the live line)
     -> DeepSeek streaming + tools (web, docs, bcbrain MCP)
     -> spoken summary -> OmniVoice Thai (local, cloned voice) -> speaker;   details after [จอ] -> on-screen panel
 
@@ -42,6 +43,7 @@ import torch
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastrtc import AdditionalOutputs, ReplyOnPause, SileroVadOptions, Stream, audio_to_float32, get_current_context
+from faster_whisper import WhisperModel
 from faster_whisper.vad import VadOptions, get_speech_timestamps
 from fastrtc.utils import create_message
 from pypdf import PdfReader
@@ -110,6 +112,11 @@ def load_stt():
     return OpenThaiASR(C.STT_MODEL_DIR, lang=C.STT_LANGUAGE, intra_threads=C.STT_THREADS)
 
 
+def load_final_stt():
+    """None without a GPU: on the CPU Typhoon took 5.2 s for 5.3 s of speech (measured 2026-11-18); OpenThai hears then."""
+    return WhisperModel(C.FINAL_STT_MODEL_DIR, device="cuda", compute_type=C.FINAL_STT_COMPUTE_TYPE) if C.HAS_CUDA else None
+
+
 def to16k(audio):  # fastrtc frames -> what Whisper and its VAD take
     sr, data = audio
     data = audio_to_float32(np.squeeze(data))
@@ -117,7 +124,7 @@ def to16k(audio):  # fastrtc frames -> what Whisper and its VAD take
 
 
 def voiced(audio):
-    """The speech only, 16 kHz, by transcribe()'s own VAD: empty = it would transcribe nothing. No padding (its
+    """The speech only, 16 kHz, by transcribe_final()'s own VAD: empty = it would transcribe nothing. No padding (its
     0.4 s a side made a 0.5 s word 2 s long), so the length is the speech's own."""
     data = to16k(audio)
     spans = get_speech_timestamps(data, VadOptions(**C.STT_VAD_PARAMS, speech_pad_ms=0))
@@ -137,6 +144,22 @@ def transcribe(audio):
 
 
 _DEFAULT_TRANSCRIBE = transcribe
+
+
+def transcribe_final(audio):
+    """The words of a speech the secretary answers: Typhoon Whisper Turbo on the GPU (ลุงจืด 2026-11-18). The VAD filter
+    is voiced()'s: without it Whisper heard "สวัสดีครับ" in 2 s of silence and in 2 s of hiss, a turn nobody said.
+    ponytail: the GPU model failing (the card is nearly full) costs that one speech the better ears, not the call"""
+    data = to16k(audio)
+    if final_stt is None:
+        return stt.transcribe(data)
+    try:
+        segments, _ = final_stt.transcribe(data, language="th", beam_size=1, vad_filter=True,
+                                           vad_parameters=C.STT_VAD_PARAMS, without_timestamps=True)
+        return "".join(s.text for s in segments).strip()
+    except Exception:
+        log.exception("Typhoon STT failed, OpenThai heard this speech")
+        return stt.transcribe(data)
 
 
 EARLY = {}  # handler -> (the speech so far, its transcription job), started in the silence before a turn ends
@@ -1297,12 +1320,9 @@ def search_words(history, heard):
 
 # ลุงจืด 2026-11-18 "หาวิธีให้ตอบเร็ว แต่คุณภาพในคำตอบสูง": a searched turn waited PAUSE_SILENCE_S for the turn to end and
 # only then asked for its search words (0.81 s median before the first search, log 2026-11-16..17). The early
-# transcription is done 0.5-0.8 s after the last word and the turn ends at 1.0, so the very same ask goes out then and
-# search_words takes its answer (4 real-time runs: the words came 0.23-0.49 s sooner); nothing else is done early, and
-# the boss gets what it got before. The live transcript (same model, same audio) often reads the whole speech before
-# that transcription is done: determine_pause asks with it then; the same words are the same ask, other words are one
-# unused ask (18 real-time runs on the test audio: the ask search_words took went out 0.71 s after the last word at
-# the median, 0.91 s before the two changes of determine_pause).
+# transcription is done before the turn ends at 1.0 s (0.69 s after the last word at the median of 18 real-time runs
+# on the test audio), so the very same ask goes out then and search_words takes its answer; nothing else is done
+# early, and the boss gets what it got before.
 # ponytail: only while the secretary is silent (a speech is a turn then, and its words go to DeepSeek anyway), so a
 # caller who cuts in gains nothing; a caller who stops and goes on costs one unused ask per stop
 WORDS = {}  # the caller part of an ask made early -> its DeepSeek job
@@ -1433,7 +1453,7 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
     sr, data = audio
     heard = early_words(data) if data.size > sr * 0.3 else ""  # chat/system turns carry no audio
     if heard is None:  # no early transcription of this speech
-        heard = transcribe(audio)
+        heard = transcribe_final(audio)
     heard = "" if heard == "เสียงดนตรี" else heard  # Whisper's music/noise caption is no words (just_filler drops it too)
     heard = " ".join(x for x in (heard, take("text", "")) if x)  # typed chat joins (or replaces) the speech
     note = take("note", "")
@@ -1732,6 +1752,8 @@ async def remind_loop(stream):
 def warm_up():
     t0 = time.perf_counter()
     stt.transcribe(np.zeros(16000, dtype=np.float32))
+    if final_stt is not None:  # no VAD filter: the model itself runs once
+        list(final_stt.transcribe(np.zeros(16000, dtype=np.float32), language="th", beam_size=1)[0])
     llm.chat(model=C.VISION_MODEL, messages=[{"role": "user", "content": "สวัสดี"}], think=False, keep_alive=-1)
     # same system prompt + tools as real calls: DeepSeek caches that prefix and the connection stays open
     hello = [{"role": "system", "content": C.SYSTEM_PROMPT}, {"role": "user", "content": "สวัสดี"}]
@@ -1775,8 +1797,8 @@ class BargeInReplyOnPause(ReplyOnPause):
             spoken = " ".join(t for s, e, t in self.playing if e + 0.5 > now_m - turn_s and s < now_m)
             if spoken and grounding.is_echo(txt, spoken):
                 return
-            if live:  # seen: the speech up to there reads as text (determine_pause asks for its search words)
-                new, live["text"], live["seen"] = txt != live["text"], txt, live.get("fed", 0)
+            if live:
+                new, live["text"] = txt != live["text"], txt
                 if new:
                     self.send_message_sync(json.dumps({"type": "partial", "data": txt}, ensure_ascii=False))
         except Exception:
@@ -1812,11 +1834,7 @@ class BargeInReplyOnPause(ReplyOnPause):
         now_m = time.monotonic()
         min_new = int(sampling_rate * C.LIVE_STEP_S)
         early = EARLY.get(id(self))
-        # the model takes one job at a time (OpenThaiASR._lock): live steps in the silence after the speech held up the
-        # early transcription, the one job the answer waits for (done 0.91 s after the last word, 0.76 s without them;
-        # medians of 14 and 18 real-time runs on the test audio). None starts from EARLY_STT_SILENCE_S until it is done.
-        # ponytail: the karaoke line gets the last words of a speech up to that much later
-        if ((silence < C.EARLY_STT_SILENCE_S or early and early[1].done() and silence < C.PAUSE_SILENCE_S) and not live["busy"]
+        if (silence < C.PAUSE_SILENCE_S and not live["busy"]
                 and now_m - live["t"] >= C.LIVE_STEP_S and state.stream.size - live.get("fed", 0) >= min_new):
             fed = live.get("fed", 0)
             delta = state.stream[fed:].copy() if live.get("stream") is not None else state.stream[-15 * sampling_rate:].copy()
@@ -1832,15 +1850,11 @@ class BargeInReplyOnPause(ReplyOnPause):
             early = None
         fresh = not early and silence >= C.EARLY_STT_SILENCE_S
         if fresh:
-            early = EARLY[id(self)] = (state.stream, EARLY_STT.submit(transcribe, (sampling_rate, state.stream)))
+            early = EARLY[id(self)] = (state.stream, EARLY_STT.submit(transcribe_final, (sampling_rate, state.stream)))
         # the secretary neither thinks nor had a phrase on the caller's speaker during this speech (as just_filler counts it)
-        if early and not state.responding and not any(e + 0.5 > now_m - state.stream.size / sampling_rate for _, e, _ in self.playing):
+        if fresh and not state.responding and not any(e + 0.5 > now_m - state.stream.size / sampling_rate for _, e, _ in self.playing):
             history = session(self.fn is reply_public)[1]
-            if fresh:
-                early[1].add_done_callback(lambda job: words_transcribed(job, history))
-            # the live transcript reads the whole speech and the transcription is not done: ask with its words now
-            if not early[1].done() and live.get("seen", 0) >= state.stream.size - silence * sampling_rate:
-                words_early(live["text"], history)
+            early[1].add_done_callback(lambda job: words_transcribed(job, history))
         return silence >= C.PAUSE_SILENCE_S
 
     def process_audio(self, audio, state):
@@ -1894,7 +1908,7 @@ class BargeInReplyOnPause(ReplyOnPause):
         if not spoken:
             return False
         early = EARLY.get(id(self))  # started 0.25 s ago: usually done
-        heard = early[1].result() if early else transcribe((state.sampling_rate, state.stream))
+        heard = early[1].result() if early else transcribe_final((state.sampling_rate, state.stream))
         if echo := grounding.is_echo(heard, spoken):
             log.info("echo of its own voice, not a turn: %s", masked(heard))
         return echo
@@ -1930,7 +1944,7 @@ class BargeInReplyOnPause(ReplyOnPause):
         if not (state.responding or any(s < end and e > end - speech_s for s, e, _ in self.playing)):
             return False
         early = EARLY.get(id(self))
-        heard = re.sub(r"[\s.,!?…]+", "", early[1].result() if early else transcribe((state.sampling_rate, state.stream)))
+        heard = re.sub(r"[\s.,!?…]+", "", early[1].result() if early else transcribe_final((state.sampling_rate, state.stream)))
         if not heard or (speech_s < C.BARGE_MIN_SPEECH_S and heard not in self.CUT_INS):
             log.info("too short to cut in (%.2fs of speech), not a turn: %s", speech_s, masked(heard))
             return True
@@ -2119,6 +2133,7 @@ if __name__ == "__main__":
     os.makedirs(C.DOCS_DIR, exist_ok=True)
     os.makedirs(C.SESSIONS_DIR, exist_ok=True)
     stt = load_stt()
+    final_stt = load_final_stt()
     if not C.DEEPSEEK_API_KEY:
         raise SystemExit("DEEPSEEK_API_KEY is not set: put it in .env (the boss runs on DeepSeek)")
     # without a timeout a hung Ollama hung the turn for good. 60 s covers warm_up's first model load (~25 s); a judge call
@@ -2127,7 +2142,8 @@ if __name__ == "__main__":
     tts = load_tts()
     load_mcp_tools()
     load_workers()
-    log.info("STT=%s (cpu-onnx) BOSS=%s VISION=%s TTS=%s (%s)", C.STT_MODEL, C.DEEPSEEK_MODEL, C.VISION_MODEL, C.TTS_MODEL, C.DEVICE)
+    log.info("STT=%s (gpu %s, final words) + %s (cpu-onnx, live) BOSS=%s VISION=%s TTS=%s (%s)", C.FINAL_STT_MODEL,
+             C.FINAL_STT_COMPUTE_TYPE, C.STT_MODEL, C.DEEPSEEK_MODEL, C.VISION_MODEL, C.TTS_MODEL, C.DEVICE)
     warm_up()
     if C.PUBLIC_SSH:
         threading.Thread(target=tunnel, daemon=True).start()

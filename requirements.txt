@@ -4,7 +4,7 @@
 # Then install f5-tts-th without overriding torch/numpy (only its text normalizer is used; the voice is omnivoice):
 #   uv pip install --no-deps f5-tts-th==1.0.9
 onnxruntime
-faster-whisper  # Silero VAD gating (faster_whisper.vad)
+faster-whisper  # Typhoon Whisper Turbo on the GPU (transcribe_final) and Silero VAD gating (faster_whisper.vad)
 cached_path
 omnivoice
 torchdiffeq

@@ -24,6 +24,13 @@ STT_MODEL_DIR = os.environ.get("STT_MODEL_DIR", os.path.join(BASE_DIR, "models",
 STT_LANGUAGE = os.environ.get("STT_LANGUAGE", "th-TH")
 STT_THREADS = int(os.environ.get("STT_THREADS", "8"))
 STT_VAD_PARAMS = dict(min_silence_duration_ms=400)  # Silero VAD gate used by voiced() before barge-in/turn checks
+# The words the answer is made from: Typhoon Whisper Turbo (SCB 10X) on the GPU through faster-whisper; OpenThai keeps
+# the live karaoke line (ลุงจืด 2026-11-18). The directory is the CTranslate2 copy of the Hugging Face weights (README).
+# int8_float16: 1.2 GB of GPU memory, 0.22 s for 5.3 s of speech; float16 took 2.3 GB and was no faster, and the card
+# had 1.4-3.5 GB free beside the judge and the voice (measured 2026-11-18)
+FINAL_STT_MODEL = os.environ.get("FINAL_STT_MODEL", "typhoon-ai/typhoon-whisper-turbo")
+FINAL_STT_MODEL_DIR = os.environ.get("FINAL_STT_MODEL_DIR", os.path.join(BASE_DIR, "models", "typhoon-whisper-turbo-ct2"))
+FINAL_STT_COMPUTE_TYPE = "int8_float16"
 
 # --- LLMs: the boss on DeepSeek; the judge in Ollama ---
 # 127.0.0.1, not localhost: on Windows "localhost" tries ::1 first and every new connection waits ~2 s
