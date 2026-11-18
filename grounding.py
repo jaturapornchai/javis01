@@ -128,7 +128,13 @@ def is_number(word):
 # (numbers() still checks exact rates), and "SQL/query" as "คิวรี่"; an era name adds nothing to a year
 READINGS = {**dict(zip("ม.ค. ก.พ. มี.ค. เม.ย. พ.ค. มิ.ย. ก.ค. ส.ค. ก.ย. ต.ค. พ.ย. ธ.ค.".split(), (
     "มกราคม กุมภาพันธ์ มีนาคม เมษายน พฤษภาคม มิถุนายน กรกฎาคม สิงหาคม กันยายน ตุลาคม พฤศจิกายน ธันวาคม").split())),
-    "%": "เปอร์เซ็นต์ ร้อยละ", "query": "คิวรี่ คิวรี", "sql": "คิวรี่ คิวรี"}
+    "%": "เปอร์เซ็นต์ ร้อยละ", "query": "คิวรี่ คิวรี", "sql": "คิวรี่ คิวรี",
+    # voice_agent.log 2026-11-07..18: 37 of 1502 judge cuts held an edition or term in the boss's Thai spelling (สตาร์ทเตอร์ 23,
+    # สแตนดาร์ด 8, แดชบอร์ด 8, เอ็นเตอร์ไพรส์ 3) though the note has it in English; the 8B judge called each new_info and gave
+    # no source word. ponytail: the spellings that log shows plus the voice table's สตาร์ตเตอร์; another spelling goes to the
+    # judge as before, and the English word anywhere in the sources is enough (a "standard cost" note lets สแตนดาร์ด through)
+    "starter": "สตาร์ทเตอร์ สตาร์ตเตอร์", "standard": "สแตนดาร์ด", "professional": "โปรเฟสชันนอล",
+    "enterprise": "เอ็นเตอร์ไพรส์", "dashboard": "แดชบอร์ด", "fifo": "ฟีโฟ ไฟโฟ"}
 
 
 # how Thai speakers read Latin letters (ลุงจืด 2026-11-04 "ระบบพีโอเอส = ระบบ POS"): the boss must say a source's
@@ -166,7 +172,8 @@ def new_words(piece, sources):
     # ponytail: source words put together into a new claim pass ("ยกเลิกผ่านระบบบัญชีที่ใช้อยู่"); judging every
     # phrase instead costs ~1 s each and the 8B judge says yes to almost all of them anyway
     src_low = sources.lower()
-    low = " ".join([sources, "พุทธศักราช คริสต์ศักราช", *(r for a, r in READINGS.items() if a.lower() in src_low), *spelled(sources)]).lower()
+    # markdown stars are no part of a word: "(8001–8013)" was new beside the note's "(**8001**–**8013**)" (eval 2026-11-18)
+    low = " ".join([sources.replace("*", ""), "พุทธศักราช คริสต์ศักราช", *(r for a, r in READINGS.items() if a.lower() in src_low), *spelled(sources)]).lower()
     # digits too: "50.00" for calc's 50 went to the judge as a new word and the table row was cut (eval 2026-11-08)
     seen = lambda w: len(w) > 1 and (w in STOP or is_number(w) or NUM.fullmatch(w) or w.lower() in low)
     def known(w):  # a source word, or one glued to a stopword by the tokenizer: ใช้กับ = ใช้ + กับ

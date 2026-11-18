@@ -116,6 +116,21 @@ for replies, want in ((['{"words": [', talk_json], True), (['{"words": [', "oops
     calls, va.llm = [], fake_llm(replies)
     assert va.judge(src, "ระบบเราติดตั้งให้ฟรีถึงร้านครับ", "") is want and len(calls) == 2, (want, len(calls))
     assert len(calls[1]) < len(calls[0]) and "ท้ายแหล่งข้อมูล" in calls[1] and "ต้นแหล่งข้อมูล" not in calls[1]
+# a sentence that asks the caller something gets the short talk ask first, with no sources: its talk words are done, a
+# word that answer skipped or called a claim goes to the sourced ask, a broken answer sends them all. A statement never
+# gets the talk ask
+ask, say = "ใช้สมุดกับปากกาจดอยู่หรือเปล่าครับ", "ใช้สมุดจดอยู่ครับ"
+typed = lambda *pairs: json.dumps({"words": [{"word": w, "type": t, "source_word": ""} for w, t in pairs]})
+for piece, replies, want, sourced in (
+        (ask, [typed(("สมุด", "talk"), ("ปากกา", "talk"))], True, []),
+        (ask, [typed(("สมุด", "talk"), ("สมุด", "talk")), typed(("ปากกา", "talk"))], True, ["ปากกา"]),
+        (ask, [typed(("สมุด", "talk"), ("ปากกา", "claim")), typed(("ปากกา", "new_info"))], False, ["ปากกา"]),
+        (ask, ["oops", typed(("สมุด", "talk"), ("ปากกา", "talk"))], True, ["สมุด", "ปากกา"]),
+        (say, [typed(("สมุด", "talk"))], True, ["สมุด"])):
+    calls, va.llm = [], fake_llm(replies)
+    assert va.judge("ใช้ จด อยู่ ครับ กับ", piece, "") is want and not replies, (piece, want, replies)
+    assert [c.startswith("SOURCES:") for c in calls] == [False] * (piece == ask) + [True] * bool(sourced), calls
+    assert not sourced or calls[-1].split("nowhere in SOURCES: ")[-1].startswith(", ".join(sourced) + "\n"), calls[-1]
 va.llm = saved_llm
 sums = va.calc("รับเข้า 10 ชิ้น: 10*50\n1,200/20\n0.1+0.2\n1000/3\n1/0\n__import__('os')\n2**99999")[1].splitlines()
 assert sums[:4] == ["รับเข้า 10 ชิ้น 10*50 = 500", "1200/20 = 60", "0.1+0.2 = 0.3", "1000/3 = 333.33"], sums  # Decimal, half up
@@ -299,6 +314,11 @@ assert all(va.grounding.new_words(line, f"{va.OWN_WORDS}\n{va.TALK_WORDS}") for 
 for line, term in (("ช่วยสะกดหรือบอกอีกนิดได้ไหมครับ", ""), ("ผมไม่แน่ใจว่าหมายถึงจาวาสคริปต์อะไรครับ", "จาวาสคริปต์"),
                    ("ผมยังไม่เข้าใจคำว่าแฟลตกับออนเคานต์นี้ ช่วยอธิบายสั้นๆ ได้ไหมครับ", "แฟลต ออนเคานต์")):
     assert not va.grounding.new_words(line, f"{va.OWN_WORDS}\n{va.TALK_WORDS}\n{term}"), line
+# a Thai reading passes only beside its English word in the sources; the note's markdown stars are no part of a number
+for line, src in (("รุ่นสแตนดาร์ดกับสตาร์ทเตอร์ ดูแดชบอร์ดและต้นทุนแบบฟีโฟได้", "รุ่น Standard กับ Starter ดู Dashboard และต้นทุนแบบ FIFO ได้"),
+                  ("ซ่อนหมวด 8. ค่าเสื่อม (8001–8013)", "ซ่อนหมวด **8. ค่าเสื่อม** (**8001**–**8013**)")):
+    assert not va.grounding.new_words(line, src), line
+assert va.grounding.new_words("รุ่นสแตนดาร์ด", "รุ่น Starter ใช้ฟรี") == ["สแตนดาร์ด"]
 # the who-line is no judge source (A/B 2026-11-10: it flipped small talk 3/5 -> 2/5); the line before it is
 facts = va.setup_facts(va.BASE_PROMPT + "\nสายนี้ค้นเว็บไม่ได้" + va.ABOUT_ASK + "ผมเป็นเลขา AI")
 assert "สายนี้ค้นเว็บไม่ได้" in facts and "เลขา AI" not in facts, facts
@@ -328,8 +348,9 @@ class FakeBrain:  # read_note, find_media and search_brain as the brain answers 
     def call(self, name, args):
         if name == "read_note":
             return NOTE_WITH_MEDIA
-        if name == "search_brain":  # the note about the query scores high, the same note for any other query low
-            return json.dumps([{"slug": "howto-buy-pr-po", "score": 109 if args["query"] == "ใบสั่งซื้อ" else 30}])
+        if name == "search_brain":  # the note about the query scores high; the other note, and any other query, low
+            return json.dumps([{"slug": "howto-buy-pr-po", "score": 109 if args["query"] == "ใบสั่งซื้อ" else 30},
+                               {"slug": "howto-stock-overview", "score": 30}])
         return json.dumps({"count": 4, "items": [] if args["query"] == "ไม่มี" else [
             {"kind": "youtube", "title": "EP.3", "url": "https://www.youtube.com/watch?v=74csOGLdjJk", "noteSlug": "howto-buy-pr-po"},
             {"kind": "webpage", "title": "คู่มือ", "url": "https://bcaccount.com/manual", "noteSlug": "howto-buy-pr-po"},
@@ -346,6 +367,49 @@ assert va.mcp_tool("bcbrain", FakeBrain(), "find_media")(query="ไม่มี"
 # the brain gives media for any query (no score cut): a query its own search scores low shows nothing and says so
 m_cards, m_text = va.mcp_tool("bcbrain", FakeBrain(), "find_media")(query="ต้มยำกุ้ง")
 assert m_cards == [] and "ไม่พบ" in m_text, (m_cards, m_text)
+
+
+class NearBrain:  # a sub-note with no media of its own: find_media adds its 1-hop neighbours' (the first 4 hits are the seeds)
+    def __init__(self, scores):
+        self.scores, self.asked = scores, []
+
+    def call(self, name, args):
+        if name == "search_brain":
+            self.asked.append(args)
+            return json.dumps([{"slug": f"hit{k}", "score": s} for k, s in enumerate(self.scores)])
+        return json.dumps({"count": 2, "items": [
+            {"kind": "image", "title": "จอของโน้ตข้างเคียง", "url": "https://bcaccount.com/manual/images/near.png", "noteSlug": "neighbour"},
+            {"kind": "image", "title": "จอของโน้ตคะแนนต่ำ", "url": "https://bcaccount.com/manual/images/weak.png", "noteSlug": "hit4"}]})
+
+
+near = NearBrain([120, 90, 80, 60, 30])
+m_cards, m_text = va.mcp_tool("bcbrain", near, "find_media")(query="รายงานใบสั่งขาย", kind="all", limit=20, audience="user")
+assert [m["title"] for m in m_cards[0]["media"]] == ["จอของโน้ตข้างเคียง"], m_cards  # all 4 seeds match: their neighbour counts, a weak hit's own does not
+assert near.asked == [{"query": "รายงานใบสั่งขาย", "limit": 10, "audience": "user"}], near.asked  # the gate reads the hits find_media started from
+assert va.mcp_tool("bcbrain", NearBrain([120, 90, 80, 40, 30]), "find_media")(query="ก")[0] == []  # a weak seed: the neighbour may be its own
+# ลุงจืด 2026-11-18: a customer call's prefetch searches the brain's "user" zone, every zone once SQL or a table is asked for
+assert va.brain_audience(True, "ตารางราคาสี่รุ่นเท่าไหร่ ราคา แพ็กเกจ") == va.brain_audience(True, "ทำใบเสนอราคาขายทำยังไง") == {"audience": "user"}
+for sql_ask in ("ช่วยสร้างคิวรี่รายงานยอดคงเหลือสินค้าให้หน่อยครับ", "ขอ SQL ยอดขายรายเดือน", "ยอดลูกหนี้เก็บอยู่ตารางไหนครับ",
+                "ขอเอสคิวแอลหน่อย", "เอายอดรวมด้วย SQL", "ขอดูฐานข้อมูลลูกหนี้", "มี API ไหม"):
+    assert va.brain_audience(True, sql_ask) == {"audience": "all"}, sql_ask
+assert va.brain_audience(False, "ขอ SQL ยอดขาย") == va.brain_audience(False, "ราคาเท่าไหร่") == {}  # the owner's line: as before
+# the page names what a worker looks for by its words: a search's switches (zone, kind, limit) are not shown
+assert va.shown({"query": "ใบเสนอราคา", "kind": "all", "limit": 20, "audience": "user"}) == "ใบเสนอราคา" and va.shown({"name": "ก", "phone": "ข"}) == "ก ข"
+# a search hit carries its note's own pictures and videos (the brain attaches them): shown before the note is read
+HITS_WITH_MEDIA = json.dumps([
+    {"slug": "howto-sale-quotation", "title": "ใบเสนอราคา", "snippet": "ก", "score": 204,
+     "videos": [{"title": "EP.2 ขาย", "url": "https://www.youtube.com/watch?v=74csOGLdjJk&list=PLO9P7tPZLXB0"}],
+     "images": [{"alt": "ฟอร์มใบเสนอราคา", "url": "https://bcaccount.com/manual/images/quotation.png"}]},
+    {"slug": "rpt-sale-so", "title": "รายงาน", "snippet": "ข", "score": 177},
+    {"slug": "off-topic", "title": "อื่น", "snippet": "ค", "score": 20, "images": [{"alt": "x", "url": "https://bcaccount.com/x.png"}]}])
+h_cards, h_text = va.brain_hits("bcbrain", HITS_WITH_MEDIA)
+assert [[(m["kind"], m["title"]) for m in c["media"]] for c in h_cards] == [[("youtube", "EP.2 ขาย"), ("image", "ฟอร์มใบเสนอราคา")], []], h_cards
+assert "http" not in h_text  # the boss still gets slug, title and snippet only: links stay on the cards
+turn_m = {}
+outs = [o.args[0] for o in va.dispatch([("search_brain", {"query": "ใบเสนอราคา", "audience": "user"})], [], turn_m,
+                                       {"search_brain": lambda query, audience: va.brain_hits("bcbrain", HITS_WITH_MEDIA)})]
+assert turn_m["media"] == 2, turn_m  # the prefetch asks find_media only when no card of the turn brought a picture or video
+assert all("user" not in str(o.get("text", "")) + str(o.get("task", "")) for o in outs if o["kind"] in ("status", "team")), outs
 
 C.DOCS_DIR = tempfile.mkdtemp()
 C.SESSIONS_DIR = tempfile.mkdtemp()  # the call's session file goes here, not into sessions/
@@ -406,7 +470,9 @@ if C.TURN_SECRET:  # coturn use-auth-secret: "<expiry>:javis" + base64 HMAC-SHA1
     turn = va.ice_servers()["iceServers"][1]
     assert 3500 < int(turn["username"].split(":")[0]) - time.time() <= 3600 and len(base64.b64decode(turn["credential"])) == 20
 # barge-in gate: the caller's speech counts, 1.2 s of hiss over the bot does not (2026-11-04 a noise blip cut a whole answer)
-speech = (librosa.load(C.REF_AUDIO_PATH, sr=48000)[0][: 2 * 48000] * 32767).astype(np.int16)
+# 2 s of unbroken speech: the reference voice of 2026-11-17 pauses 0.26 s at 1.15 s (its first 2 s read as a pause
+# mid-turn) and then talks on to the end of the file, so the clip starts after that pause and ends mid-word
+speech = (librosa.load(C.REF_AUDIO_PATH, sr=48000)[0][int(1.5 * 48000) : int(3.5 * 48000)] * 32767).astype(np.int16)
 hiss = np.random.default_rng(0).normal(0, 800, 57600).astype(np.int16)
 assert va.stt_hears((48000, speech)) and not va.stt_hears((48000, hiss)) and not va.stt_hears((48000, hiss * 0))
 va.warm_up()
@@ -417,12 +483,13 @@ h, early = va.make_stream().event_handler, set()  # early: sizes of the audio ea
 def until_pause(*parts):
     h.state = h.state.new()
     early.clear()
-    said = np.concatenate([hiss * 0, *parts, np.zeros(48000, np.int16)])  # 1.2 s silence first, 1 s at the end
+    # 1.2 s silence first, 1.5 s at the end: a clip that ends mid-word is over one check step after PAUSE_SILENCE_S
+    said = np.concatenate([hiss * 0, *parts, np.zeros(72000, np.int16)])
     for n in range(0, said.size, 960):  # 20 ms frames, as WebRTC sends them
         h.process_audio((48000, said[n : n + 960]), h.state)
         early.update([va.EARLY[id(h)][0].size] if id(h) in va.EARLY else [])
         if h.state.pause_detected:
-            return (n + 960 - said.size) / 48000 + 1  # seconds after the last word
+            return (n + 960 - said.size) / 48000 + 1.5  # seconds after the last word
     raise AssertionError("no pause")
 
 

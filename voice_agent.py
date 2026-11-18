@@ -677,6 +677,17 @@ def leads_page():
                + "".join(cells) + "</table>" if cells else "<p>ยังไม่มีลูกค้าฝากข้อความ</p>") + "</html>")
 
 
+# ลุงจืด 2026-11-18: a customer call's prefetch reads the brain's "user" zone (plain-Thai guides), so notes of the code/SQL
+# zone stay out of a call-center answer; asking for SQL, a query or a database table opens every zone
+SQL_ASK = re.compile(r"(?i)(?<![a-z])(?:sql|quer(?:y|ies)|tables?|database|schema|api)(?![a-z])|เอสคิวแอล|คิวรี|เควรี|ฐานข้อมูล|ดาต้าเบส"
+                     r"|เทเบิ้?ล|สคีมา|ฟิลด์|คอลัมน์|เอพีไอ|ตาราง(?:ข้อมูล|ไหน|อะไร)|(?:ชื่อ|โครงสร้าง)ตาราง")
+
+
+def brain_audience(public, words):
+    """The brain zone a prefetch search reads: the owner's line as before (every zone), a customer's by what was asked."""
+    return {"audience": "all" if SQL_ASK.search(words) else "user"} if public else {}
+
+
 def brain_hits(server, text):
     """search_brain JSON -> only notes that really match, one card each (prefetch and the LLM's own calls alike)."""
     # ponytail: fixed score cut, calibrated on 11 real questions (relevant >= 52, off-topic <= 44 once news/prices
@@ -686,7 +697,7 @@ def brain_hits(server, text):
         hits = [h for h in json.loads(text) if isinstance(h, dict) and h.get("score", 0) >= C.BRAIN_MIN_SCORE][:3]
     except ValueError:
         return [{"source": server, "title": "search_brain", "snippet": text[:400], "url": None}], text
-    cards = [{"source": server, "title": h.get("title", ""), "snippet": str(h.get("snippet", ""))[:300], "url": None, "slug": h.get("slug")} for h in hits]
+    cards = [{"source": server, "title": h.get("title", ""), "snippet": str(h.get("snippet", ""))[:300], "url": None, "slug": h.get("slug"), "media": hit_media(h)} for h in hits]
     found = [{k: h.get(k) for k in ("slug", "title", "snippet")} for h in hits]
     return cards, ("อ่านเต็มด้วย read_note ตาม slug: " + json.dumps(found, ensure_ascii=False)) if hits else "ไม่พบเรื่องที่ตรงกับคำนี้ในคลังความรู้ BC"
 
@@ -714,18 +725,31 @@ def note_media(text):
     return [m for m in found if m]
 
 
-def brain_media(server, client, query, found):
+def hit_media(hit):
+    """The videos and pictures the brain attaches to a search hit: that note's own, the first three of each."""
+    found = [*(media_item("youtube", str(v.get("title", "")), str(v.get("url", ""))) for v in hit.get("videos") or () if isinstance(v, dict)),
+             *(media_item("image", str(i.get("alt", "")), str(i.get("url", ""))) for i in hit.get("images") or () if isinstance(i, dict))]
+    return [m for m in found if m]
+
+
+def brain_media(server, client, args, found):
     """find_media JSON -> one card of the pictures and videos of notes that really match the query, none otherwise."""
     # ponytail: the brain's find_media has no score cut (measured 2026-11-17: a nonsense query still got 6 items, all from
-    # notes scoring under 30 or their neighbours), so an item counts only when search_brain scores its own note as relevant
-    # for the same query. Costs one more brain call; a hub note that matches brings all its videos. Upgrade: a score per
-    # item from the brain.
+    # notes scoring under 30 or their neighbours), so an item counts only when the brain's search scores its note as
+    # relevant: the same 10 hits in the same zone find_media starts from (bcbrain lib/vault.ts findMedia). An item of a
+    # note outside those hits is a 1-hop neighbour of one of the first 4 (a sub-note's module picture); which one is not
+    # told, so it counts only when all 4 are relevant. Costs one more brain call. Upgrade: a score per item from the brain.
+    query = str(args.get("query", "")).strip()
     try:
-        hits = json.loads(client.call("search_brain", {"query": query})) if query else []
+        hits = json.loads(client.call("search_brain", {"query": query, "limit": 10, "audience": args.get("audience", "user")})) if query else []
     except ValueError:
         hits = []
-    strong = {h.get("slug") for h in hits if isinstance(h, dict) and h.get("score", 0) >= C.BRAIN_MIN_SCORE}
-    items = [it for it in found.get("items", []) if isinstance(it, dict) and it.get("noteSlug") in strong]
+    hits = [h for h in hits if isinstance(h, dict)]
+    strong = {h.get("slug") for h in hits if h.get("score", 0) >= C.BRAIN_MIN_SCORE}
+    near = bool(hits) and all(h.get("slug") in strong for h in hits[:4])
+    weak = {h.get("slug") for h in hits} - strong
+    items = [it for it in found.get("items", []) if isinstance(it, dict)
+             and (it.get("noteSlug") in strong or near and it.get("noteSlug") not in weak)]
     if not items:
         return [], "ไม่พบภาพหรือวิดีโอที่ตรงกับเรื่องนี้"
     media = [m for it in items if (m := media_item(it.get("kind"), str(it.get("title", "")), str(it.get("url", ""))))]
@@ -742,7 +766,7 @@ def mcp_tool(server, client, name):
             body = NOTE_META.sub("", text).partition("\n")[2].strip()
             return [{"source": server, "title": text.partition("\n")[0].lstrip("# "), "snippet": body[:300], "url": None, "slug": args.get("slug"), "media": note_media(text)}], text
         if name == "find_media" and text.lstrip().startswith("{"):
-            return brain_media(server, client, str(args.get("query", "")).strip(), json.loads(text))
+            return brain_media(server, client, args, json.loads(text))
         return [{"source": server, "title": f"{name}: {next(iter(args.values()), '')}", "snippet": text[:400], "url": None}], text
     return run
 
@@ -1046,10 +1070,12 @@ def is_label(ln):
     return C.SAMPLE_LABEL.split()[0] in ln and not grounding.new_words(ln, C.SAMPLE_LABEL)
 
 
-def judge_format(new):  # one entry per new word, those words only: shorter output, none skipped or added
-    entry = {"type": "object", "required": ["word", "type", "source_word"], "properties": {
-        "word": {"type": "string", "enum": new}, "type": {"type": "string", "enum": ["talk", "same_as_source", "new_info"]},
-        "source_word": {"type": "string"}}}
+def judge_format(new, types=("talk", "same_as_source", "new_info")):
+    # one entry per new word, those words only: shorter output, none skipped or added
+    props = {"word": {"type": "string", "enum": new}, "type": {"type": "string", "enum": list(types)}}
+    if "same_as_source" in types:
+        props["source_word"] = {"type": "string"}
+    entry = {"type": "object", "required": list(props), "properties": props}
     return {"type": "object", "required": ["words"], "properties": {
         "words": {"type": "array", "items": entry, "minItems": len(new), "maxItems": len(new)}}}
 
@@ -1088,6 +1114,19 @@ JUDGE_ASK = (
     "A life of its own is new_info too: its home, family, the weather where it is, what it did or felt "
     "(แถวบ้านผม, ที่บ้านผม, ผมก็เคย). source_word is \"\" unless same_as_source. Answer JSON."
 )
+# A sentence that asks the caller something first gets JUDGE_ASK's talk part on its own, with no SOURCES: the words it
+# calls talk are done, the rest go to JUDGE_ASK. Beside 4500 chars of sources the 8B judge called nearly every new word
+# new_info, its own talk examples too (48 judged pieces of the eval calls, 2026-11-18: 22 of 35 true ones cut; 17 with
+# this ask first, and no made-up line more gets through).
+# Questions only: asked for every sentence it let 4 of 42 made-up lines through that JUDGE_ASK cuts, each a statement
+# whose new word was a feeling or a place ("เรื่องภาษีไม่ต้องปวดหัวเลยครับ ระบบยื่นให้เองหมด", "ที่ออฟฟิศผมก็ใช้ระบบนี้อยู่ครับ").
+# ponytail: a marker list; a question with no marker stays on JUDGE_ASK alone, a statement holding one gets this ask too
+ASKS = re.compile("ไหม|มั้ย|หรือเปล่า|รึเปล่า|หรือยัง|ยังไง|อย่างไร|อะไร|ไหน|เท่าไหร่|เท่าไร|กี่")
+TALK_ASK = (
+    "A Thai voice assistant already said: {before}\nIt now wants to say: {piece}\nWords of it to sort: {new}\n\n"
+    "Give each of those words a type. talk = " + JUDGE_ASK.partition("talk = ")[2].partition("same_as_source = ")[0]
+    + "claim = every other word: " + JUDGE_ASK.partition("new_info = ")[2].partition(" source_word is")[0]
+    .replace("that SOURCES do not say, ", "").replace("is new_info too", "is claim too") + " Answer JSON.")
 # said only when every phrase of an answer was cut. ลุงจืด 2026-11-08 "ผมไม่เจอในแหล่งข้อมูล ขอไม่เดานะครับ อันนี้พูดบ่อยไป":
 # an answer with some phrases kept now just ends on them (the panel still notes the cut), and this asks for more words
 CUT_ALL = "เรื่องนี้ผมยังหาข้อมูลที่แน่ใจไม่เจอครับ ช่วยเล่าเพิ่มอีกนิดได้ไหมครับ"
@@ -1138,6 +1177,19 @@ def setup_facts(prompt):
     return prompt.removeprefix(BASE_PROMPT).partition(ABOUT_ASK)[0]
 
 
+def not_talk(piece, tail, new):
+    """The new words TALK_ASK does not call talk. No answer keeps them all: every word then goes to the sourced ask."""
+    try:
+        r = llm.chat(model=C.JUDGE_MODEL, messages=[{"role": "user", "content": TALK_ASK.format(before=tail, piece=piece, new=", ".join(new))}],
+                     format=judge_format(new, ("talk", "claim")), think=False, keep_alive=-1, options={"temperature": 0})
+        typed = json.loads(r.message.content)["words"]
+    except Exception as e:
+        log.warning("talk ask failed (%s)", type(e).__name__)
+        return new
+    claim = {w["word"] for w in typed if w["type"] != "talk"}
+    return [w for w in new if w in claim or all(t["word"] != w for t in typed)]  # a word the answer skipped stays
+
+
 def judge(sources, piece, before):
     """ห้ามแต่งเรื่อง: True only if `piece` states nothing the sources lack (numbers have their own check).
     The prompt alone did not hold: the boss added "ต้องระวังเรื่องการจัดส่งและรับชำระ" that no result had."""
@@ -1146,6 +1198,9 @@ def judge(sources, piece, before):
     if not (new := grounding.new_words(piece, f"{sources}\n{before}\n{TALK_WORDS}\n{PUBLIC['prompt'].partition(ABOUT_ASK)[2]}")):
         return True  # every word is a source word: no model call, so most phrases cost nothing
     low = sources.lower()  # a claimed source word must really be there (code checks the model)
+    tail = (f"{C.SAMPLE_LABEL}\n" if C.SAMPLE_LABEL.split()[0] in before and C.SAMPLE_LABEL.split()[0] not in before[-600:] else "") + (before[-600:] or "-")
+    if ASKS.search(piece) and not (new := not_talk(piece, tail, new)):
+        return True
 
     def verdict(src):
         # 13 JSONDecodeErrors in the call log, 4 of 8 eval runs (run 7 cut a true ถัวเฉลี่ย line). Cause (spy 2026-11-10,
@@ -1153,7 +1208,6 @@ def judge(sources, piece, before):
         # 6000 chars of dense Thai (JUDGE_MAX_CHARS) can fill it, and the same prompt again broke the same way 4/4.
         # So the retry reads the nearer half of the source. ponytail: the far half is unread on the retry (a would-be
         # cut either way); the upgrade is a smaller JUDGE_MAX_CHARS or a larger num_ctx, each with a judge eval before/after
-        tail = (f"{C.SAMPLE_LABEL}\n" if C.SAMPLE_LABEL.split()[0] in before and C.SAMPLE_LABEL.split()[0] not in before[-600:] else "") + (before[-600:] or "-")
         for attempt in (1, 2):
             ask = JUDGE_ASK.format(src=src if attempt == 1 else src[len(src) // 2:], before=tail,
                                    piece=piece, new=", ".join(new))
@@ -1291,11 +1345,16 @@ PUBLIC = {"tools": {}, "specs": [], "prompt": ""}  # set by load_workers
 JOB_IDS = itertools.count(1)
 
 
+def shown(args):
+    """What the page says a worker looks for: its words, not a search's switches."""
+    return " ".join(str(v) for k, v in args.items() if k not in ("audience", "kind", "limit"))
+
+
 def team_start(calls):
     """Team panel: a worker lights up when the boss hands it a job. Returns the job ids and their events."""
     ids = [next(JOB_IDS) for _ in calls]
     return ids, [AdditionalOutputs({"kind": "team", "id": i, "state": "run", "worker": WORKER.get(n, "other"),
-                                    "task": " ".join(map(str, a.values()))[:80]}) for i, (n, a) in zip(ids, calls)]
+                                    "task": shown(a)[:80]}) for i, (n, a) in zip(ids, calls)]
 
 
 def team_done(job_id, cards, t0):  # "none": the worker came back without anything to show (not found / failed)
@@ -1314,7 +1373,7 @@ def dispatch(calls, said, turn, tools):
     pool = ThreadPoolExecutor(len(calls))
     try:
         futures = {pool.submit(run_tool, *c, tools): k for k, c in enumerate(calls)}  # start all workers at once
-        jobs = " · ".join(f"{STATUS.get(n, 'กำลังตรวจสอบ')}: {' '.join(map(str, a.values()))}" for n, a in calls)
+        jobs = " · ".join(f"{STATUS.get(n, 'กำลังตรวจสอบ')}: {shown(a)}" for n, a in calls)
         yield AdditionalOutputs({"kind": "status", "text": jobs[:200]})
         yield from started
         for f in as_completed(futures):  # each worker reports the moment it finishes
@@ -1322,6 +1381,7 @@ def dispatch(calls, said, turn, tools):
             results[k] = f.result()
             yield team_done(ids[k], results[k][0], t0)
             for card in results[k][0]:
+                turn["media"] = turn.get("media", 0) + len(card.get("media") or ())  # the prefetch asks find_media when none came
                 yield AdditionalOutputs({"kind": "info", "job": ids[k], **card})  # job: the page shows each worker's finds
     finally:  # a barge-in closes this generator: the with-block waited for every worker (MCP up to 20 s)
         pool.shutdown(wait=False, cancel_futures=True)
@@ -1392,14 +1452,20 @@ def reply(audio, public=False, hello=False):  # hello: greet() already cleared t
         elif heard:  # Auto Swarm: fan out multi-angle BC brain + local docs searches in parallel, then read top notes in parallel
             qs = [stay_topic] if stay_topic else swarm_queries(wording[0], heard, history)
             query = " | ".join(qs)
-            calls = [*(( "search_brain", {"query": q2}) for q in qs if "search_brain" in tools and (q2 := LONG_NUMBER.sub("", q).strip())),
+            sql_ctx = " SQL" if history and "```sql" in history[-1]["content"].lower() else ""
+            zone = brain_audience(public, f"{heard} {query}{sql_ctx}")  # a follow-up on a SQL answer stays in every zone
+            calls = [*(("search_brain", {"query": q2, **zone}) for q in qs if "search_brain" in tools and (q2 := LONG_NUMBER.sub("", q).strip())),
                      *(("search_docs", {"query": qs[0]}) for _ in (1,) if "search_docs" in tools)]
             texts = yield from dispatch(calls, said, turn, tools)
             slugs = list(dict.fromkeys(s for (n, _), t in zip(calls, texts) if n == "search_brain"
                                        for s in re.findall(r'"slug": "([^"]+)"', t)))[:4]
             if "read_note" in tools and slugs:
-                sql_ctx = " SQL" if history and "```sql" in history[-1]["content"].lower() else ""
-                notes = yield from dispatch([("read_note", {"slug": s}) for s in slugs], said, turn, tools)
+                # ลุงจืด 2026-11-18: no matching note brought a picture or video of its own (a sub-note): ask for the ones around
+                # it in the same round as the reads. Its JSON stays off the boss's sources: links live on the cards only.
+                # ponytail: limit 20, not the page's 6: the brain counts web pages and weak notes' media before the gate drops them
+                media = [("find_media", {"query": calls[0][1]["query"], "kind": "all", "limit": 20, "audience": zone.get("audience", "all")})
+                         for _ in (1,) if "find_media" in tools and not turn.get("media")]
+                notes = (yield from dispatch([*(("read_note", {"slug": s}) for s in slugs), *media], said, turn, tools))[:len(slugs)]
                 for k, note in enumerate(notes):
                     part = grounding.note_sections(note, f"{heard} {' '.join(qs)}{sql_ctx}")  # query: FIFO for a heard "ไฟโฟ"
                     if not part and k == 0:  # top hit whose headings used other words: pass its lead body so round 0 answers at once
